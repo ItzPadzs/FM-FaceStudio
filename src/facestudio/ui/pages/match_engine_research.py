@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIntValidator, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from facestudio.match_engine_research.head_explorer import HeadExplorerService, HeadLibrary, HeadRecord
 from facestudio.match_engine_research.service import MatchEngineResearchService, ScanReport
+from facestudio.match_engine_research.texture_builder import PhotoTextureBuilder
 
 
 class MatchEngineResearchPage(QWidget):
@@ -29,16 +30,18 @@ class MatchEngineResearchPage(QWidget):
         super().__init__()
         self.service = service
         self.head_service = HeadExplorerService()
+        self.texture_builder = PhotoTextureBuilder()
         self.report: ScanReport | None = None
         self.head_library: HeadLibrary | None = None
+        self.selected_record: HeadRecord | None = None
+        self.photo_source: Path | None = None
 
         root = QVBoxLayout(self)
         title = QLabel("Match Engine Research")
         title.setObjectName("PageTitle")
         root.addWidget(title)
-
         summary = QLabel(
-            "Inspect copied research files in read-only mode. The Head Explorer groups observed FM26 loose head assets by player ID, reads plain-text CFG2 values and records binary SKIN evidence without claiming to decode its proprietary structure."
+            "Research FM26 loose head assets by Football Manager unique ID. Inspect PNG, CFG2 and SKIN evidence, then create a non-destructive photo-on-template UV texture prototype for controlled testing."
         )
         summary.setWordWrap(True)
         root.addWidget(summary)
@@ -67,8 +70,33 @@ class MatchEngineResearchPage(QWidget):
         path_row.addWidget(export)
         layout.addLayout(path_row)
 
+        id_row = QHBoxLayout()
+        self.unique_id = QLineEdit()
+        self.unique_id.setPlaceholderText("Enter Football Manager unique ID")
+        self.unique_id.setValidator(QIntValidator(0, 2_147_483_647, self))
+        self.unique_id.returnPressed.connect(self.find_unique_id)
+        find_button = QPushButton("Find unique ID")
+        find_button.clicked.connect(self.find_unique_id)
+        id_row.addWidget(QLabel("Unique ID:"))
+        id_row.addWidget(self.unique_id, 1)
+        id_row.addWidget(find_button)
+        layout.addLayout(id_row)
+
+        texture_row = QHBoxLayout()
+        self.photo_path = QLineEdit()
+        self.photo_path.setReadOnly(True)
+        self.photo_path.setPlaceholderText("Choose a clear front-facing photograph")
+        choose_photo = QPushButton("Choose photo")
+        choose_photo.clicked.connect(self.choose_photo)
+        build_texture = QPushButton("Create texture prototype")
+        build_texture.clicked.connect(self.build_texture)
+        texture_row.addWidget(self.photo_path, 1)
+        texture_row.addWidget(choose_photo)
+        texture_row.addWidget(build_texture)
+        layout.addLayout(texture_row)
+
         self.head_status = QLabel(
-            "Use a separate copied folder where possible. FaceStudio will not edit PNG, CFG2, SKIN or JSON files."
+            "Files are read-only. Generated textures are saved separately and never replace the selected FM26 source texture automatically."
         )
         self.head_status.setWordWrap(True)
         layout.addWidget(self.head_status)
@@ -112,12 +140,9 @@ class MatchEngineResearchPage(QWidget):
         path_row.addWidget(scan)
         path_row.addWidget(export)
         layout.addLayout(path_row)
-
         self.output = QTextEdit()
         self.output.setReadOnly(True)
-        self.output.setPlainText(
-            "This inventory records paths, sizes, hashes and headers. It does not unpack archives or modify files."
-        )
+        self.output.setPlainText("This inventory records paths, sizes, hashes and headers. It does not unpack archives or modify files.")
         layout.addWidget(self.output, 1)
         return page
 
@@ -139,13 +164,12 @@ class MatchEngineResearchPage(QWidget):
 
         self.player_list.clear()
         for index, record in enumerate(self.head_library.records):
-            item = QListWidgetItem(f"{record.player_name}  [{record.player_id}]  • {record.available_assets} assets")
+            item = QListWidgetItem(f"{record.player_id}  • {record.player_name}  • {record.available_assets} assets")
             item.setData(Qt.ItemDataRole.UserRole, index)
             self.player_list.addItem(item)
-
         named = sum(record.player_name != "Unknown player" for record in self.head_library.records)
         self.head_status.setText(
-            f"Loaded {len(self.head_library.records)} player records; {named} names resolved; "
+            f"Loaded {len(self.head_library.records)} unique IDs; {named} optional names resolved; "
             f"{len(self.head_library.warnings)} warnings. No files were changed."
         )
         if self.head_library.records:
@@ -153,6 +177,67 @@ class MatchEngineResearchPage(QWidget):
         else:
             self.preview.setText("No matching head assets found")
             self.head_output.setPlainText("Expected files named with a numeric player ID and .png, .cfg2 or .skin extension.")
+
+    def find_unique_id(self) -> None:
+        player_id = self.unique_id.text().strip()
+        if not player_id:
+            QMessageBox.warning(self, "Unique ID required", "Enter a numeric Football Manager unique ID.")
+            return
+        if self.head_library is None:
+            QMessageBox.warning(self, "Load heads first", "Load the heads folder before searching by unique ID.")
+            return
+        for row, record in enumerate(self.head_library.records):
+            if record.player_id == player_id:
+                self.player_list.setCurrentRow(row)
+                self.player_list.scrollToItem(self.player_list.item(row))
+                return
+        QMessageBox.information(self, "Unique ID not found", f"No loose head assets were found for {player_id}.")
+
+    def choose_photo(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a front-facing photograph",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if selected:
+            self.photo_source = Path(selected)
+            self.photo_path.setText(selected)
+
+    def build_texture(self) -> None:
+        if self.head_library is None or self.selected_record is None:
+            QMessageBox.warning(self, "Player required", "Load the heads folder and select a unique ID first.")
+            return
+        if self.selected_record.face_png is None:
+            QMessageBox.warning(self, "Template missing", "The selected unique ID has no face PNG to use as a UV template.")
+            return
+        if self.photo_source is None:
+            QMessageBox.warning(self, "Photo required", "Choose a clear front-facing photograph first.")
+            return
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save texture prototype",
+            f"{self.selected_record.player_id}-texture-prototype.png",
+            "PNG files (*.png)",
+        )
+        if not selected:
+            return
+        template = Path(self.head_library.root) / self.selected_record.face_png
+        try:
+            result = self.texture_builder.build(
+                self.selected_record.player_id,
+                self.photo_source,
+                template,
+                Path(selected),
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Texture build failed", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Texture prototype created",
+            f"Saved to:\n{result.destination}\n\nThis is an early centre-face UV composite, not a proven final match-engine texture. The original FM26 files were not changed.",
+        )
 
     def show_player(self, current: QListWidgetItem | None, previous: QListWidgetItem | None = None) -> None:
         del previous
@@ -162,6 +247,8 @@ class MatchEngineResearchPage(QWidget):
         if not isinstance(index, int) or not 0 <= index < len(self.head_library.records):
             return
         record = self.head_library.records[index]
+        self.selected_record = record
+        self.unique_id.setText(record.player_id)
         self._show_preview(record)
         self.head_output.setPlainText(self._format_head_record(record))
 
@@ -177,19 +264,13 @@ class MatchEngineResearchPage(QWidget):
             self.preview.setText("PNG could not be displayed")
             return
         self.preview.setText("")
-        self.preview.setPixmap(
-            pixmap.scaled(
-                self.preview.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        self.preview.setPixmap(pixmap.scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     @staticmethod
     def _format_head_record(record: HeadRecord) -> str:
         lines = [
-            f"Player: {record.player_name}",
-            f"Football Manager ID: {record.player_id}",
+            f"Football Manager unique ID: {record.player_id}",
+            f"Optional name: {record.player_name}",
             "",
             "Observed loose assets:",
             f"• Face PNG: {record.face_png or 'Missing'}",
@@ -205,30 +286,30 @@ class MatchEngineResearchPage(QWidget):
             lines.extend(f"• {key} = {value}" for key, value in record.cfg2_values.items())
         if record.skin_summary is not None:
             summary = record.skin_summary
-            lines.extend(
-                [
-                    "",
-                    "SKIN — binary evidence only:",
-                    f"• Size: {summary.size_bytes:,} bytes",
-                    f"• SHA-256: {summary.sha256}",
-                    f"• First 64 bytes: {summary.header_hex}",
-                    "• First little-endian 32-bit values: " + ", ".join(str(value) for value in summary.little_endian_u32),
-                    "",
-                    "FaceStudio has not decoded what these binary fields mean.",
-                ]
-            )
+            lines.extend([
+                "",
+                "SKIN — binary evidence only:",
+                f"• Size: {summary.size_bytes:,} bytes",
+                f"• SHA-256: {summary.sha256}",
+                f"• First 64 bytes: {summary.header_hex}",
+                "• First little-endian 32-bit values: " + ", ".join(str(value) for value in summary.little_endian_u32),
+                "",
+                "FaceStudio has not decoded what these binary fields mean.",
+            ])
+        lines.extend([
+            "",
+            "Photo texture prototype:",
+            "• Uses this ID's face PNG only as an observed UV template.",
+            "• Blends a centre-cropped front photo into the central face region.",
+            "• Does not yet perform landmark detection, side projection or automatic skin-tone correction.",
+        ])
         return "\n".join(lines)
 
     def export_heads(self) -> None:
         if self.head_library is None:
             QMessageBox.warning(self, "Nothing to export", "Load a heads folder first.")
             return
-        selected, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export FM26 head report",
-            "facestudio-fm26-head-library.json",
-            "JSON files (*.json)",
-        )
+        selected, _ = QFileDialog.getSaveFileName(self, "Export FM26 head report", "facestudio-fm26-head-library.json", "JSON files (*.json)")
         if not selected:
             return
         try:
@@ -253,24 +334,15 @@ class MatchEngineResearchPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Scan failed", str(exc))
             return
-
         category_counts: dict[str, int] = {}
         extension_counts: dict[str, int] = {}
         for record in self.report.records:
             category_counts[record.category] = category_counts.get(record.category, 0) + 1
             extension_counts[record.extension] = extension_counts.get(record.extension, 0) + 1
-
         lines = [
-            "Read-only scan complete",
-            "",
-            f"Folder: {self.report.root}",
-            f"Files recorded: {self.report.file_count}",
-            f"Files skipped: {len(self.report.skipped)}",
-            "",
-            "Categories:",
-            *(f"• {name}: {count}" for name, count in sorted(category_counts.items())),
-            "",
-            "Extensions:",
+            "Read-only scan complete", "", f"Folder: {self.report.root}", f"Files recorded: {self.report.file_count}",
+            f"Files skipped: {len(self.report.skipped)}", "", "Categories:",
+            *(f"• {name}: {count}" for name, count in sorted(category_counts.items())), "", "Extensions:",
             *(f"• {name}: {count}" for name, count in sorted(extension_counts.items())),
         ]
         if self.report.skipped:
@@ -282,12 +354,7 @@ class MatchEngineResearchPage(QWidget):
         if self.report is None:
             QMessageBox.warning(self, "Nothing to export", "Scan a folder first.")
             return
-        selected, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export research report",
-            "facestudio-match-engine-scan.json",
-            "JSON files (*.json)",
-        )
+        selected, _ = QFileDialog.getSaveFileName(self, "Export research report", "facestudio-match-engine-scan.json", "JSON files (*.json)")
         if not selected:
             return
         try:
