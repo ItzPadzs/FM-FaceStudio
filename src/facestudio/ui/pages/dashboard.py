@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from facestudio.fm.installation import detect_installation
 from facestudio.projects.recent import RecentProject
+from facestudio.version import APP_NAME, APP_VERSION
 
 
 class DashboardPage(QWidget):
@@ -26,9 +27,9 @@ class DashboardPage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 32, 36, 32)
-        layout.setSpacing(20)
+        layout.setSpacing(18)
 
-        eyebrow = QLabel("FM FACESTUDIO")
+        eyebrow = QLabel(APP_NAME.upper())
         eyebrow.setObjectName("Eyebrow")
         layout.addWidget(eyebrow)
 
@@ -51,6 +52,7 @@ class DashboardPage(QWidget):
         hero_layout.setSpacing(12)
 
         hero_copy = QVBoxLayout()
+        hero_copy.setSpacing(5)
         hero_title = QLabel("Start your next player")
         hero_title.setObjectName("SectionTitle")
         hero_copy.addWidget(hero_title)
@@ -86,7 +88,7 @@ class DashboardPage(QWidget):
         status_grid.setVerticalSpacing(14)
         cards = [
             ("FM26 installation", install_text),
-            ("Version", "Alpha 0.8.0 Build 1"),
+            ("Version", APP_VERSION),
             ("Autosave", "Enabled"),
             ("Workspace safety", "Read-only game access"),
         ]

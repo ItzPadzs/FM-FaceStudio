@@ -45,6 +45,11 @@ QFrame#HeroCard {
     border: 1px solid #323845;
     border-radius: 12px;
 }
+QFrame#InfoCard {
+    background: #1a1e25;
+    border: 1px solid #303642;
+    border-radius: 11px;
+}
 QPushButton {
     background: #242933;
     border: 1px solid #353c49;
@@ -153,6 +158,11 @@ QFrame#HeroCard {
     background: #ffffff;
     border: 1px solid #d9dfe7;
     border-radius: 12px;
+}
+QFrame#InfoCard {
+    background: #ffffff;
+    border: 1px solid #d9dfe7;
+    border-radius: 11px;
 }
 QPushButton {
     background: #ffffff;
