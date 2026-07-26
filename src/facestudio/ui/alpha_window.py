@@ -7,9 +7,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
 
 from facestudio.ui.main_window import MainWindow
 from facestudio.utils.config import AppConfig
-
-APP_NAME = "FM FaceStudio"
-APP_VERSION = "Alpha 0.8.0 Build 2"
+from facestudio.version import APP_NAME, APP_VERSION
 
 _SHELL_BASE = """
 QLabel {
@@ -118,7 +116,6 @@ class AlphaMainWindow(MainWindow):
             caption.setObjectName("SidebarCaption")
             layout.insertWidget(max(0, layout.count() - 1), caption)
 
-        # Reapply after assigning the Alpha object names so Qt repolishes them.
         self.apply_theme(self.config.theme)
         self.status.showMessage(f"{APP_VERSION} ready.", 3500)
 
