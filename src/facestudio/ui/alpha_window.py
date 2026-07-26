@@ -11,7 +11,7 @@ from facestudio.utils.config import AppConfig
 APP_NAME = "FM FaceStudio"
 APP_VERSION = "Alpha 0.8.0 Build 2"
 
-_ALPHA_SHELL_STYLESHEET = """
+_SHELL_BASE = """
 QLabel {
     background: transparent;
 }
@@ -23,21 +23,16 @@ QLabel#Brand {
     margin: 0;
 }
 QLabel#VersionLabel {
-    color: #6ea8ff;
     font-size: 9pt;
     font-weight: 700;
-    letter-spacing: 0.5px;
     padding-bottom: 8px;
 }
 QLabel#SidebarCaption {
-    color: #7f8998;
     font-size: 8pt;
     font-weight: 700;
     padding-top: 8px;
 }
 QLabel#ProjectSummary {
-    color: #b6bec9;
-    border: 1px solid #2d3440;
     border-radius: 9px;
     padding: 10px;
 }
@@ -55,6 +50,26 @@ QStatusBar {
 }
 """
 
+_DARK_SHELL = """
+QLabel#VersionLabel { color: #6ea8ff; }
+QLabel#SidebarCaption { color: #7f8998; }
+QLabel#ProjectSummary {
+    color: #b6bec9;
+    background: #151920;
+    border: 1px solid #2d3440;
+}
+"""
+
+_LIGHT_SHELL = """
+QLabel#VersionLabel { color: #2867b2; }
+QLabel#SidebarCaption { color: #778291; }
+QLabel#ProjectSummary {
+    color: #566171;
+    background: #f6f8fb;
+    border: 1px solid #d9dfe7;
+}
+"""
+
 
 class AlphaMainWindow(MainWindow):
     """Alpha 0.8 application shell layered over the validated workspace logic."""
@@ -65,7 +80,8 @@ class AlphaMainWindow(MainWindow):
 
     def apply_theme(self, theme: str) -> None:
         super().apply_theme(theme)
-        self.setStyleSheet(self.styleSheet() + _ALPHA_SHELL_STYLESHEET)
+        shell_theme = _LIGHT_SHELL if theme == "light" else _DARK_SHELL
+        self.setStyleSheet(self.styleSheet() + _SHELL_BASE + shell_theme)
 
     def _polish_alpha_shell(self) -> None:
         self.setWindowTitle(f"{APP_NAME} — {APP_VERSION}")
@@ -79,8 +95,7 @@ class AlphaMainWindow(MainWindow):
         sidebar.setMinimumWidth(240)
         sidebar.setMaximumWidth(270)
 
-        labels = sidebar.findChildren(QLabel)
-        for label in labels:
+        for label in sidebar.findChildren(QLabel):
             if label.text() == "FM FaceStudio":
                 label.setText(APP_NAME)
             elif label.text() == "SPRINT 7":
@@ -103,6 +118,8 @@ class AlphaMainWindow(MainWindow):
             caption.setObjectName("SidebarCaption")
             layout.insertWidget(max(0, layout.count() - 1), caption)
 
+        # Reapply after assigning the Alpha object names so Qt repolishes them.
+        self.apply_theme(self.config.theme)
         self.status.showMessage(f"{APP_VERSION} ready.", 3500)
 
     def _set_session(self, project, directory: Path) -> None:
