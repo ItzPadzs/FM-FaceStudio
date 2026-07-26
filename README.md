@@ -2,42 +2,30 @@
 
 Open-source desktop tooling for researching, analysing and eventually generating Football Manager 2026 faces from a single photograph.
 
-**Current release:** Sprint 2 — Projects (`0.2.0-alpha.1`)
+**Current release:** Sprint 3 — Asset Database (`0.3.0-alpha.1`)
 
-## Working features
+## Sprint 3 features
 
-- Create a structured `.facestudio` project folder
-- Open and save projects
-- Import and locally copy a source photograph
-- Project notes and player name
-- Recent-project dashboard
-- Configurable autosave
-- Unsaved-change protection
-- Persistent settings
-- FM26 installation detection
-- Dark and light themes
-- Read-only safety policy
+- Read-only folder scanner
+- Background scanning to keep the application responsive
+- Local SQLite asset database
+- Search by filename or relative path
+- Filter by cautious inferred asset category
+- Filter by file extension
+- File size, modification time and relative-path display
+- Scan cancellation
+- Existing Sprint 2 project workflows and autosave
 
-## Project structure
+## Important safety note
 
-```text
-Player Name.facestudio/
-├── project.json
-├── source/
-│   └── source_photo.jpg
-└── generated/
-```
+The scanner reads file metadata only. It does not modify, decode or export Football Manager files. Asset categories are inferred from filenames, folders and extensions and are not claims about proprietary file formats.
 
 ## Start on Windows
 
-1. Extract the ZIP.
-2. Double-click `INSTALL_AND_OPEN.bat`.
-3. Use `RUN.bat` after the first setup.
+Run `INSTALL_AND_OPEN.bat` after copying the Sprint 3 files into your local repository. Existing environments can usually be started with `RUN.bat`.
 
 ## Tests
 
 ```powershell
 python -m pytest
 ```
-
-The application does not modify Football Manager files.

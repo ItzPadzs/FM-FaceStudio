@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QTimer
+from PySide6.QtCore import QSize, QThread, QTimer
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -19,15 +19,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from facestudio.assets.database import AssetDatabase
 from facestudio.projects.recent import RecentProject, RecentProjectsStore
 from facestudio.projects.service import ProjectService
 from facestudio.projects.session import ProjectSession
 from facestudio.ui.pages.about import AboutPage
+from facestudio.ui.pages.asset_explorer import AssetExplorerPage
 from facestudio.ui.pages.base import PlaceholderPage
 from facestudio.ui.pages.dashboard import DashboardPage
 from facestudio.ui.pages.projects import ProjectsPage
 from facestudio.ui.pages.settings import SettingsPage
 from facestudio.ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
+from facestudio.ui.workers import AssetScanWorker
 from facestudio.utils.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -43,10 +46,15 @@ class MainWindow(QMainWindow):
         self.recent_store = RecentProjectsStore(
             config_path.parent / "recent-projects.json"
         )
+        self.asset_database = AssetDatabase(
+            config_path.parent / "assets.sqlite3"
+        )
+        self.scan_thread: QThread | None = None
+        self.scan_worker: AssetScanWorker | None = None
 
-        self.setWindowTitle("FM FaceStudio — Sprint 2")
-        self.resize(1180, 760)
-        self.setMinimumSize(QSize(920, 620))
+        self.setWindowTitle("FM FaceStudio — Sprint 3")
+        self.resize(1240, 800)
+        self.setMinimumSize(QSize(960, 640))
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -66,7 +74,7 @@ class MainWindow(QMainWindow):
         brand = QLabel("FM FaceStudio")
         brand.setObjectName("Brand")
         side.addWidget(brand)
-        sprint = QLabel("SPRINT 2")
+        sprint = QLabel("SPRINT 3")
         sprint.setObjectName("Muted")
         side.addWidget(sprint)
         side.addSpacing(16)
@@ -85,6 +93,12 @@ class MainWindow(QMainWindow):
         self.projects_page.save_requested.connect(self.save_project)
         self.projects_page.import_photo_requested.connect(self.import_photo)
 
+        self.asset_explorer = AssetExplorerPage(self.asset_database)
+        self.asset_explorer.scan_requested.connect(self.start_asset_scan)
+        self.asset_explorer.cancel_requested.connect(self.cancel_asset_scan)
+        if config.fm_install_path:
+            self.asset_explorer.root_path.setText(config.fm_install_path)
+
         settings = SettingsPage(config)
         settings.theme_changed.connect(self.apply_theme)
         settings.settings_changed.connect(self.save_config)
@@ -92,9 +106,9 @@ class MainWindow(QMainWindow):
         pages = [
             ("Dashboard", self.dashboard),
             ("Project", self.projects_page),
-            ("Face AI", PlaceholderPage("Face AI", "Analyse a source photograph and create a reusable face descriptor.", "Planned for Sprint 5.")),
-            ("Asset Explorer", PlaceholderPage("Asset Explorer", "Index and browse FM26 appearance assets.", "Planned for Sprint 3.")),
+            ("Asset Explorer", self.asset_explorer),
             ("Mesh Viewer", PlaceholderPage("Mesh Viewer", "Inspect supported meshes in an interactive viewport.", "Planned for Sprint 4.")),
+            ("Face AI", PlaceholderPage("Face AI", "Analyse a source photograph and create a reusable face descriptor.", "Planned for Sprint 5.")),
             ("Export", PlaceholderPage("Export Centre", "Build validated packages with backup and restore.", "Disabled until game formats are fully validated.")),
             ("Settings", settings),
             ("About", AboutPage()),
@@ -127,15 +141,7 @@ class MainWindow(QMainWindow):
         self.refresh_recent_projects()
         self.navigate(0)
         self.apply_theme(config.theme)
-        LOGGER.info("Sprint 2 main window initialised")
-
-        if config.last_project_path:
-            candidate = Path(config.last_project_path)
-            if candidate.exists():
-                self.status.showMessage(
-                    "Last project is available from Recent Projects.",
-                    5000,
-                )
+        LOGGER.info("Sprint 3 main window initialised")
 
     def navigate(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -183,11 +189,7 @@ class MainWindow(QMainWindow):
         try:
             project = self.project_service.create(directory, name)
         except (OSError, ValueError) as exc:
-            QMessageBox.critical(
-                self,
-                "Unable to create project",
-                str(exc),
-            )
+            QMessageBox.critical(self, "Unable to create project", str(exc))
             return
 
         self._set_session(project, directory)
@@ -197,7 +199,6 @@ class MainWindow(QMainWindow):
     def open_project_dialog(self) -> None:
         if not self._confirm_discard_if_needed():
             return
-
         directory = QFileDialog.getExistingDirectory(
             self,
             "Open FaceStudio Project",
@@ -209,7 +210,6 @@ class MainWindow(QMainWindow):
         if self.session.directory != directory:
             if not self._confirm_discard_if_needed():
                 return
-
         try:
             project = self.project_service.open(directory)
         except (OSError, ValueError) as exc:
@@ -220,7 +220,6 @@ class MainWindow(QMainWindow):
             )
             self.refresh_recent_projects()
             return
-
         self._set_session(project, directory)
         self.status.showMessage("Project opened.", 4000)
         self.navigate(1)
@@ -229,12 +228,10 @@ class MainWindow(QMainWindow):
         self.session.project = project
         self.session.directory = directory
         self.session.dirty = False
-
         self.projects_page.set_project(project, directory)
         self.project_label.setText(f"{project.name}\n{directory}")
         self.setWindowTitle(f"{project.name} — FM FaceStudio")
         self.config.last_project_path = str(directory)
-
         self.recent_store.add(
             RecentProject(name=project.name, path=str(directory))
         )
@@ -244,7 +241,6 @@ class MainWindow(QMainWindow):
     def mark_dirty(self) -> None:
         if not self.session.is_open:
             return
-
         self.projects_page.apply_to_project(self.session.project)
         self.session.dirty = True
         self.project_label.setText(
@@ -265,7 +261,6 @@ class MainWindow(QMainWindow):
             return False
 
         self.projects_page.apply_to_project(self.session.project)
-
         try:
             self.project_service.save(
                 self.session.project,
@@ -340,14 +335,84 @@ class MainWindow(QMainWindow):
         )
         self.status.showMessage("Photograph imported.", 4000)
 
+    def start_asset_scan(self, path: str) -> None:
+        if self.scan_thread is not None:
+            return
+
+        root = Path(path)
+        if not root.exists() or not root.is_dir():
+            QMessageBox.warning(
+                self,
+                "Invalid folder",
+                "Choose an existing folder.",
+            )
+            return
+
+        self.asset_explorer.set_scanning(True)
+        self.asset_explorer.update_progress(0, str(root))
+        self.status.showMessage("Scanning assets…")
+
+        thread = QThread(self)
+        worker = AssetScanWorker(root)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.progress.connect(self.asset_explorer.update_progress)
+        worker.completed.connect(self._asset_scan_completed)
+        worker.failed.connect(self._asset_scan_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._asset_scan_thread_finished)
+
+        self.scan_thread = thread
+        self.scan_worker = worker
+        thread.start()
+
+    def cancel_asset_scan(self) -> None:
+        if self.scan_worker is not None:
+            self.scan_worker.cancel()
+            self.status.showMessage("Cancelling scan…")
+
+    def _asset_scan_completed(self, result) -> None:
+        try:
+            count = self.asset_database.replace_root(
+                result.root,
+                result.records,
+            )
+        except OSError as exc:
+            self._asset_scan_failed(str(exc))
+            return
+
+        self.asset_explorer.scan_finished(
+            count,
+            result.skipped_files,
+            result.root,
+        )
+        self.status.showMessage(
+            f"Indexed {count:,} files.",
+            5000,
+        )
+
+    def _asset_scan_failed(self, message: str) -> None:
+        QMessageBox.critical(
+            self,
+            "Asset scan failed",
+            message,
+        )
+        self.status.showMessage("Asset scan failed.", 5000)
+
+    def _asset_scan_thread_finished(self) -> None:
+        self.asset_explorer.set_scanning(False)
+        self.scan_thread = None
+        self.scan_worker = None
+
     def configure_autosave(self) -> None:
         self.autosave_timer.stop()
         if self.config.autosave_enabled:
-            interval_ms = max(
-                15,
-                self.config.autosave_interval_seconds,
-            ) * 1000
-            self.autosave_timer.start(interval_ms)
+            self.autosave_timer.start(
+                max(15, self.config.autosave_interval_seconds) * 1000
+            )
 
     def autosave(self) -> None:
         if (
@@ -358,8 +423,9 @@ class MainWindow(QMainWindow):
             self.save_project(silent=True)
 
     def refresh_recent_projects(self) -> None:
-        projects = self.recent_store.remove_missing()
-        self.dashboard.set_recent_projects(projects)
+        self.dashboard.set_recent_projects(
+            self.recent_store.remove_missing()
+        )
 
     def save_config(self) -> None:
         try:
@@ -386,7 +452,6 @@ class MainWindow(QMainWindow):
             | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Save,
         )
-
         if choice == QMessageBox.StandardButton.Save:
             return self.save_project()
         if choice == QMessageBox.StandardButton.Discard:
@@ -394,6 +459,8 @@ class MainWindow(QMainWindow):
         return False
 
     def closeEvent(self, event) -> None:
+        if self.scan_worker is not None:
+            self.scan_worker.cancel()
         if not self._confirm_discard_if_needed():
             event.ignore()
             return

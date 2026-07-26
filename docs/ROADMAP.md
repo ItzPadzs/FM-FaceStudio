@@ -2,7 +2,7 @@
 
 - Sprint 1: Foundation ✅
 - Sprint 2: Projects, recent files and autosave ✅
-- Sprint 3: FM asset index and decoder migration
+- Sprint 3: Read-only asset database ✅
 - Sprint 4: Interactive mesh viewer
 - Sprint 5: Face AI migration
 - Sprint 6: Asset matching
