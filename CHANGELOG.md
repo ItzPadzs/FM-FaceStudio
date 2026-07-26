@@ -1,15 +1,19 @@
 # Changelog
 
+## 0.5.0-alpha.1 — Sprint 5
+
+- Added frontal-face analysis.
+- Added detected and estimated facial feature anchors.
+- Added facial proportion measurements.
+- Added broad face-shape descriptors.
+- Added annotated preview generation.
+- Added project-based `analysis.json` persistence.
+- Added background analysis worker.
+- Added confidence and method transparency.
+
 ## 0.4.0-alpha.1 — Sprint 4
 
-- Added interactive wireframe Mesh Explorer.
-- Added safe Wavefront OBJ parser.
-- Added camera rotation, panning, zoom and reset.
-- Added mesh statistics and bounds.
-- Added inspection-only mode for unsupported binary formats.
-- Added Asset Explorer double-click opening.
-- Added demonstration OBJ.
-- Corrected the dashboard sprint label.
+- Added interactive OBJ Mesh Explorer.
 
 ## 0.3.0-alpha.1 — Sprint 3
 

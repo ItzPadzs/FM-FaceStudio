@@ -1,19 +1,36 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
 from pathlib import Path
 
+import cv2
 
-@dataclass(frozen=True, slots=True)
-class FaceDescriptor:
-    source_image: Path
-    face_width_to_height: float
-    eye_distance_to_face_width: float
-    mouth_width_to_face_width: float
-    nose_width_to_face_width: float
-    skin_hex: str
+from facestudio.ai.analyzer import FaceAnalysisError, FaceAnalyzer
+from facestudio.ai.models import FaceAnalysis
 
 
 class FaceAnalysisService:
-    def analyse(self, image_path: Path) -> FaceDescriptor:
-        raise NotImplementedError("Face AI migration is planned for Alpha 0.5.")
+    def __init__(self) -> None:
+        self.analyzer = FaceAnalyzer()
+
+    def analyze_project_photo(
+        self,
+        source_path: Path,
+        project_directory: Path,
+    ) -> tuple[FaceAnalysis, Path, Path]:
+        analysis, overlay = self.analyzer.analyze(source_path)
+
+        analysis_path = project_directory / "analysis.json"
+        preview_path = project_directory / "preview.png"
+
+        temporary = analysis_path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(analysis.to_dict(), indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(analysis_path)
+
+        if not cv2.imwrite(str(preview_path), overlay):
+            raise FaceAnalysisError("The analysis preview could not be written.")
+
+        return analysis, analysis_path, preview_path

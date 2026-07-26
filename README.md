@@ -2,31 +2,38 @@
 
 Open-source desktop tooling for researching, analysing and eventually generating Football Manager 2026 faces from a single photograph.
 
-**Current release:** Sprint 4 — Mesh Explorer (`0.4.0-alpha.1`)
+**Current release:** Sprint 5 — Face Analysis (`0.5.0-alpha.1`)
 
-## Sprint 4 features
+## Sprint 5 features
 
-- Interactive software-rendered 3D wireframe viewport
-- Wavefront OBJ loading
-- Mouse rotation, zoom and panning
-- Vertex, edge, face and bounds statistics
-- Read-only binary inspection for unsupported files
-- Double-click an indexed Asset Explorer result to open it
-- Included demonstration OBJ under `examples/sample_head.obj`
-- Dashboard sprint-label correction
-- All Sprint 2 and Sprint 3 features retained
+- OpenCV frontal-face detection
+- Eye detection where image quality allows
+- Mouth-region detection where image quality allows
+- Proportional nose, chin and forehead anchors
+- Normalised facial landmark coordinates
+- Face proportion measurements
+- Broad face-shape descriptor
+- Analysis confidence and detection-source labels
+- Landmark overlay preview
+- Automatic `analysis.json` and `preview.png` storage inside each project
+- Background analysis so the interface remains responsive
 
-## Format support
+## Important limitation
 
-Sprint 4 renders **Wavefront OBJ only**. Football Manager `.skin` and other proprietary formats are not claimed to be decoded. Those files open in inspection-only mode, showing safe file metadata and header bytes.
+This is an analysis foundation, not a biometric identification system. Haar cascades work best with a clear, well-lit, front-facing portrait. Green markers are detected features; amber markers are explicitly labelled proportional estimates. Face-shape categories are broad geometric descriptors rather than definitive classifications.
 
-## Trying the viewport
+## Using Face Analysis
 
-1. Start FaceStudio.
-2. Open **Mesh Explorer**.
-3. Click **Open file…**.
-4. Choose `examples/sample_head.obj`.
-5. Drag to rotate, use the mouse wheel to zoom, and hold Shift while dragging to pan.
+1. Create or open a project.
+2. Import a clear source photograph on the **Project** page.
+3. Open **Face Analysis**.
+4. Click **Analyse photograph**.
+5. Review the overlay and descriptor.
+6. Find saved results in the project folder as `analysis.json` and `preview.png`.
+
+## Install/update
+
+Run `INSTALL_AND_OPEN.bat` once after updating because Sprint 5 adds OpenCV.
 
 ## Tests
 

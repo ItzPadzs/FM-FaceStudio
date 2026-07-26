@@ -29,9 +29,10 @@ from facestudio.ui.pages.base import PlaceholderPage
 from facestudio.ui.pages.dashboard import DashboardPage
 from facestudio.ui.pages.projects import ProjectsPage
 from facestudio.ui.pages.mesh_viewer import MeshViewerPage
+from facestudio.ui.pages.face_analysis import FaceAnalysisPage
 from facestudio.ui.pages.settings import SettingsPage
 from facestudio.ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
-from facestudio.ui.workers import AssetScanWorker
+from facestudio.ui.workers import AssetScanWorker, FaceAnalysisWorker
 from facestudio.utils.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -52,8 +53,10 @@ class MainWindow(QMainWindow):
         )
         self.scan_thread: QThread | None = None
         self.scan_worker: AssetScanWorker | None = None
+        self.analysis_thread: QThread | None = None
+        self.analysis_worker: FaceAnalysisWorker | None = None
 
-        self.setWindowTitle("FM FaceStudio — Sprint 4")
+        self.setWindowTitle("FM FaceStudio — Sprint 5")
         self.resize(1240, 800)
         self.setMinimumSize(QSize(960, 640))
 
@@ -75,7 +78,7 @@ class MainWindow(QMainWindow):
         brand = QLabel("FM FaceStudio")
         brand.setObjectName("Brand")
         side.addWidget(brand)
-        sprint = QLabel("SPRINT 4")
+        sprint = QLabel("SPRINT 5")
         sprint.setObjectName("Muted")
         side.addWidget(sprint)
         side.addSpacing(16)
@@ -104,6 +107,9 @@ class MainWindow(QMainWindow):
         self.mesh_viewer = MeshViewerPage()
         self.mesh_viewer.status_message.connect(self.status.showMessage)
 
+        self.face_analysis = FaceAnalysisPage()
+        self.face_analysis.analyze_requested.connect(self.start_face_analysis)
+
         settings = SettingsPage(config)
         settings.theme_changed.connect(self.apply_theme)
         settings.settings_changed.connect(self.save_config)
@@ -113,7 +119,7 @@ class MainWindow(QMainWindow):
             ("Project", self.projects_page),
             ("Asset Explorer", self.asset_explorer),
             ("Mesh Explorer", self.mesh_viewer),
-            ("Face AI", PlaceholderPage("Face AI", "Analyse a source photograph and create a reusable face descriptor.", "Planned for Sprint 5.")),
+            ("Face Analysis", self.face_analysis),
             ("Export", PlaceholderPage("Export Centre", "Build validated packages with backup and restore.", "Disabled until game formats are fully validated.")),
             ("Settings", settings),
             ("About", AboutPage()),
@@ -146,7 +152,7 @@ class MainWindow(QMainWindow):
         self.refresh_recent_projects()
         self.navigate(0)
         self.apply_theme(config.theme)
-        LOGGER.info("Sprint 4 main window initialised")
+        LOGGER.info("Sprint 5 main window initialised")
 
     def navigate(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -234,6 +240,7 @@ class MainWindow(QMainWindow):
         self.session.directory = directory
         self.session.dirty = False
         self.projects_page.set_project(project, directory)
+        self.face_analysis.set_project(project, directory)
         self.project_label.setText(f"{project.name}\n{directory}")
         self.setWindowTitle(f"{project.name} — FM FaceStudio")
         self.config.last_project_path = str(directory)
@@ -338,11 +345,87 @@ class MainWindow(QMainWindow):
             self.session.project,
             self.session.directory,
         )
+        self.face_analysis.set_project(
+            self.session.project,
+            self.session.directory,
+        )
         self.status.showMessage("Photograph imported.", 4000)
 
     def open_asset_in_mesh_viewer(self, path: str) -> None:
         self.mesh_viewer.open_path(Path(path))
         self.navigate(3)
+
+    def start_face_analysis(self) -> None:
+        if not self.session.is_open or not self.session.project.source_photo:
+            QMessageBox.information(
+                self,
+                "Source photograph required",
+                "Open a project and import a source photograph first.",
+            )
+            return
+        if self.analysis_thread is not None:
+            return
+
+        source_path = (
+            self.session.directory / self.session.project.source_photo
+        )
+        thread = QThread(self)
+        worker = FaceAnalysisWorker(source_path, self.session.directory)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.progress.connect(
+            lambda message: self.face_analysis.set_busy(True, message)
+        )
+        worker.completed.connect(self._face_analysis_completed)
+        worker.failed.connect(self._face_analysis_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._face_analysis_thread_finished)
+
+        self.analysis_thread = thread
+        self.analysis_worker = worker
+        self.face_analysis.set_busy(True, "Starting face analysis…")
+        self.status.showMessage("Analysing source photograph…")
+        thread.start()
+
+    def _face_analysis_completed(
+        self,
+        analysis,
+        analysis_path: str,
+        preview_path: str,
+    ) -> None:
+        self.session.project.analysis_file = str(
+            Path(analysis_path).relative_to(self.session.directory)
+        )
+        self.session.project.preview_file = str(
+            Path(preview_path).relative_to(self.session.directory)
+        )
+        self.project_service.save(
+            self.session.project,
+            self.session.directory,
+        )
+        self.session.dirty = False
+        self.face_analysis.show_analysis(
+            analysis,
+            Path(preview_path),
+        )
+        self.status.showMessage("Face analysis complete.", 5000)
+
+    def _face_analysis_failed(self, message: str) -> None:
+        QMessageBox.warning(
+            self,
+            "Face analysis could not complete",
+            message,
+        )
+        self.face_analysis.set_busy(False, message)
+        self.status.showMessage("Face analysis failed.", 5000)
+
+    def _face_analysis_thread_finished(self) -> None:
+        self.face_analysis.set_busy(False)
+        self.analysis_thread = None
+        self.analysis_worker = None
 
     def start_asset_scan(self, path: str) -> None:
         if self.scan_thread is not None:
@@ -381,6 +464,8 @@ class MainWindow(QMainWindow):
     def cancel_asset_scan(self) -> None:
         if self.scan_worker is not None:
             self.scan_worker.cancel()
+        if self.analysis_thread is not None:
+            self.analysis_thread.quit()
             self.status.showMessage("Cancelling scan…")
 
     def _asset_scan_completed(self, result) -> None:
@@ -470,6 +555,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.scan_worker is not None:
             self.scan_worker.cancel()
+        if self.analysis_thread is not None:
+            self.analysis_thread.quit()
         if not self._confirm_discard_if_needed():
             event.ignore()
             return
