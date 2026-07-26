@@ -23,6 +23,7 @@ class FaceStudioProject:
     source_photo: str = ""
     analysis_file: str = ""
     preview_file: str = ""
+    matches_file: str = ""
     selected_head: str = ""
     selected_hair: str = ""
     selected_beard: str = ""

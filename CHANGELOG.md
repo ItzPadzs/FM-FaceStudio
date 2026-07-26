@@ -1,15 +1,19 @@
 # Changelog
 
+## 0.6.0-alpha.1 — Sprint 6
+
+- Added reusable face descriptors.
+- Added weighted similarity scoring.
+- Added ranked candidate results.
+- Added per-component match scores.
+- Added sample descriptor catalogue.
+- Added custom catalogue selection.
+- Added project-based `matches.json` persistence.
+- Added background matching worker.
+
 ## 0.5.0-alpha.1 — Sprint 5
 
-- Added frontal-face analysis.
-- Added detected and estimated facial feature anchors.
-- Added facial proportion measurements.
-- Added broad face-shape descriptors.
-- Added annotated preview generation.
-- Added project-based `analysis.json` persistence.
-- Added background analysis worker.
-- Added confidence and method transparency.
+- Added frontal-face analysis and annotated previews.
 
 ## 0.4.0-alpha.1 — Sprint 4
 

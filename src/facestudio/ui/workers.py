@@ -69,3 +69,41 @@ class FaceAnalysisWorker(QObject):
             self.failed.emit(str(exc))
         finally:
             self.finished.emit()
+
+
+class FaceMatchingWorker(QObject):
+    progress = Signal(str)
+    completed = Signal(object, str)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        analysis_path: Path,
+        catalogue_path: Path,
+        output_path: Path,
+    ) -> None:
+        super().__init__()
+        self.analysis_path = analysis_path
+        self.catalogue_path = catalogue_path
+        self.output_path = output_path
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from facestudio.matching.service import MatchingService
+
+            self.progress.emit("Loading descriptors…")
+            service = MatchingService()
+            self.progress.emit("Calculating similarities…")
+            results = service.match_project(
+                self.analysis_path,
+                self.catalogue_path,
+                self.output_path,
+                limit=10,
+            )
+            self.completed.emit(results, str(self.output_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        finally:
+            self.finished.emit()

@@ -2,38 +2,38 @@
 
 Open-source desktop tooling for researching, analysing and eventually generating Football Manager 2026 faces from a single photograph.
 
-**Current release:** Sprint 5 — Face Analysis (`0.5.0-alpha.1`)
+**Current release:** Sprint 6 — Face Matcher (`0.6.0-alpha.1`)
 
-## Sprint 5 features
+## Sprint 6 features
 
-- OpenCV frontal-face detection
-- Eye detection where image quality allows
-- Mouth-region detection where image quality allows
-- Proportional nose, chin and forehead anchors
-- Normalised facial landmark coordinates
-- Face proportion measurements
-- Broad face-shape descriptor
-- Analysis confidence and detection-source labels
-- Landmark overlay preview
-- Automatic `analysis.json` and `preview.png` storage inside each project
-- Background analysis so the interface remains responsive
+- Converts project analysis into a reusable numerical face descriptor
+- Weighted similarity engine
+- Ranked top-10 candidate results
+- Per-component similarity scores
+- Sample descriptor catalogue included for transparent testing
+- Custom JSON catalogue selection
+- Automatic `matches.json` storage inside the project
+- Background matching so the interface remains responsive
+- Existing project, asset, mesh and face-analysis features retained
 
 ## Important limitation
 
-This is an analysis foundation, not a biometric identification system. Haar cascades work best with a clear, well-lit, front-facing portrait. Green markers are detected features; amber markers are explicitly labelled proportional estimates. Face-shape categories are broad geometric descriptors rather than definitive classifications.
+Sprint 6 validates the matching architecture against FaceStudio descriptor records. It does **not** claim to identify or decode Football Manager proprietary head meshes. Connecting real FM assets requires independently validated metadata or a lawful conversion pipeline.
 
-## Using Face Analysis
+## Using Face Matcher
 
 1. Create or open a project.
-2. Import a clear source photograph on the **Project** page.
-3. Open **Face Analysis**.
-4. Click **Analyse photograph**.
-5. Review the overlay and descriptor.
-6. Find saved results in the project folder as `analysis.json` and `preview.png`.
+2. Import and analyse a frontal photograph.
+3. Open **Face Matcher**.
+4. Click **Find closest matches**.
+5. Review the ranked results.
+6. Find the saved output at `matches.json` inside the project folder.
 
-## Install/update
+A sample catalogue is included at:
 
-Run `INSTALL_AND_OPEN.bat` once after updating because Sprint 5 adds OpenCV.
+```text
+data/sample_face_catalogue.json
+```
 
 ## Tests
 
