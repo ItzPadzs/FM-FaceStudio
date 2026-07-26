@@ -8,12 +8,9 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
-    QScrollArea,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -21,6 +18,8 @@ from PySide6.QtWidgets import (
 
 from facestudio.ai.models import FaceAnalysis
 from facestudio.projects.model import FaceStudioProject
+from facestudio.ui.widgets.activity_banner import ActivityBanner
+from facestudio.ui.widgets.page_header import PageHeader
 
 
 class FaceAnalysisPage(QWidget):
@@ -32,61 +31,65 @@ class FaceAnalysisPage(QWidget):
         self.directory: Path | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(12)
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(18)
 
-        header = QHBoxLayout()
-        title = QLabel("Face Analysis")
-        title.setObjectName("PageTitle")
-        header.addWidget(title)
-        header.addStretch()
         self.analyze_button = QPushButton("Analyse photograph")
         self.analyze_button.setObjectName("Primary")
         self.analyze_button.clicked.connect(self.analyze_requested.emit)
-        header.addWidget(self.analyze_button)
-        layout.addLayout(header)
 
-        explanation = QLabel(
-            "Detects one clear frontal face, estimates key feature anchors and "
-            "stores reusable measurements in the current project. Green markers "
-            "are detected; amber markers are proportional estimates."
+        layout.addWidget(
+            PageHeader(
+                "Source-photo workflow",
+                "Face Analysis",
+                "Detect one clear frontal face, estimate reusable feature anchors "
+                "and save transparent measurements inside the current project. "
+                "Detected anchors and proportional estimates remain clearly labelled.",
+                [self.analyze_button],
+            )
         )
-        explanation.setObjectName("Muted")
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-
-        self.status_label = QLabel("Open a project and import a source photograph.")
-        self.status_label.setObjectName("Muted")
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        self.activity = ActivityBanner(
+            "Open a project and import a source photograph to begin."
+        )
+        layout.addWidget(self.activity)
 
         splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
 
         preview_group = QGroupBox("Analysis preview")
+        preview_group.setObjectName("WorkspaceCard")
         preview_layout = QVBoxLayout(preview_group)
+        preview_layout.setContentsMargins(14, 20, 14, 14)
         self.preview = QLabel("No analysis preview")
+        self.preview.setObjectName("PreviewSurface")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumSize(520, 480)
-        self.preview.setStyleSheet(
-            "border: 1px dashed #4a505b; border-radius: 8px;"
-        )
         preview_layout.addWidget(self.preview)
         splitter.addWidget(preview_group)
 
         result_group = QGroupBox("Face descriptor")
+        result_group.setObjectName("WorkspaceCard")
         result_layout = QVBoxLayout(result_group)
+        result_layout.setContentsMargins(16, 20, 16, 16)
         form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
         self.shape = QLabel("—")
         self.confidence = QLabel("—")
         self.face_ratio = QLabel("—")
         self.eye_ratio = QLabel("—")
         self.mouth_ratio = QLabel("—")
         self.detected_count = QLabel("—")
+        for label in (
+            self.shape,
+            self.confidence,
+            self.face_ratio,
+            self.eye_ratio,
+            self.mouth_ratio,
+            self.detected_count,
+        ):
+            label.setObjectName("MetricValue")
         form.addRow("Broad face shape", self.shape)
         form.addRow("Overall confidence", self.confidence)
         form.addRow("Height / width", self.face_ratio)
@@ -96,6 +99,7 @@ class FaceAnalysisPage(QWidget):
         result_layout.addLayout(form)
 
         self.details = QPlainTextEdit()
+        self.details.setObjectName("AnalysisDetails")
         self.details.setReadOnly(True)
         self.details.setPlaceholderText(
             "Landmark details and analysis notes will appear here."
@@ -106,6 +110,7 @@ class FaceAnalysisPage(QWidget):
         splitter.setStretchFactor(1, 1)
 
         layout.addWidget(splitter, 1)
+        self.analyze_button.setEnabled(False)
 
     def set_project(
         self,
@@ -118,34 +123,33 @@ class FaceAnalysisPage(QWidget):
         self.analyze_button.setEnabled(has_photo)
 
         if not project or not directory:
-            self.status_label.setText(
-                "Open a project and import a source photograph."
+            self.activity.set_state(
+                "Open a project and import a source photograph to begin."
             )
             self.clear_results()
             return
 
         if not project.source_photo:
-            self.status_label.setText(
+            self.activity.set_state(
                 "Import a source photograph from the Project page first."
             )
             self.clear_results()
             return
 
-        self.status_label.setText(
+        self.activity.set_state(
             f"Ready to analyse: {directory / project.source_photo}"
         )
         if project.analysis_file and (directory / project.analysis_file).exists():
             self.load_saved_analysis(directory / project.analysis_file)
+            self.activity.set_state("Saved analysis loaded for the current project.")
         if project.preview_file and (directory / project.preview_file).exists():
             self.set_preview(directory / project.preview_file)
 
     def set_busy(self, busy: bool, message: str = "") -> None:
-        self.progress.setVisible(busy)
-        self.analyze_button.setEnabled(not busy and bool(
-            self.project and self.project.source_photo
-        ))
-        if message:
-            self.status_label.setText(message)
+        self.analyze_button.setEnabled(
+            not busy and bool(self.project and self.project.source_photo)
+        )
+        self.activity.set_state(message or "Analysing source photograph…", busy)
 
     def show_analysis(
         self,
@@ -164,12 +168,9 @@ class FaceAnalysisPage(QWidget):
             f"{analysis.measurements['mouth_line_face_height_ratio']:.3f}"
         )
         detected = sum(
-            point.source == "detected"
-            for point in analysis.landmarks.values()
+            point.source == "detected" for point in analysis.landmarks.values()
         )
-        self.detected_count.setText(
-            f"{detected} of {len(analysis.landmarks)}"
-        )
+        self.detected_count.setText(f"{detected} of {len(analysis.landmarks)}")
         lines = []
         for name, point in analysis.landmarks.items():
             lines.append(
@@ -180,7 +181,7 @@ class FaceAnalysisPage(QWidget):
             lines.extend(["", "Notes:", *analysis.notes])
         self.details.setPlainText("\n".join(lines))
         self.set_preview(preview_path)
-        self.status_label.setText(
+        self.activity.set_state(
             "Analysis complete. Results were saved inside the project."
         )
 

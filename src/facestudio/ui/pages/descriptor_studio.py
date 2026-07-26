@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -24,6 +23,8 @@ from facestudio.matching.engine import FaceMatcher
 from facestudio.matching.models import FaceDescriptor, MatchCandidate
 from facestudio.matching.presets import DescriptorPresetStore
 from facestudio.projects.model import FaceStudioProject
+from facestudio.ui.widgets.activity_banner import ActivityBanner
+from facestudio.ui.widgets.page_header import PageHeader
 from facestudio.ui.widgets.radar_chart import RadarChart
 
 
@@ -43,13 +44,12 @@ class DescriptorSlider(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(
-            0,
-            round((maximum - minimum) / step),
-        )
+        self.slider.setRange(0, round((maximum - minimum) / step))
         self.value_label = QLabel("0.000")
+        self.value_label.setObjectName("MetricValue")
         self.value_label.setMinimumWidth(58)
 
         self.slider.valueChanged.connect(self._emit_value)
@@ -86,39 +86,44 @@ class DescriptorStudioPage(QWidget):
         self.matcher = FaceMatcher()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(12)
-
-        header = QHBoxLayout()
-        title = QLabel("Descriptor Studio")
-        title.setObjectName("PageTitle")
-        header.addWidget(title)
-        header.addStretch()
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(18)
 
         self.reset_button = QPushButton("Reset to analysis")
+        self.reset_button.setObjectName("Secondary")
         self.reset_button.clicked.connect(self.reset_to_analysis)
-        save_button = QPushButton("Save preset…")
-        save_button.clicked.connect(self.save_preset)
-        load_button = QPushButton("Load comparison…")
-        load_button.clicked.connect(self.load_comparison)
-        header.addWidget(self.reset_button)
-        header.addWidget(save_button)
-        header.addWidget(load_button)
-        layout.addLayout(header)
+        self.save_button = QPushButton("Save preset…")
+        self.save_button.setObjectName("Primary")
+        self.save_button.clicked.connect(self.save_preset)
+        self.load_button = QPushButton("Load comparison…")
+        self.load_button.setObjectName("Secondary")
+        self.load_button.clicked.connect(self.load_comparison)
 
-        notice = QLabel(
-            "Edit descriptor measurements, compare a second preset and inspect "
-            "the live similarity breakdown. Changes here do not overwrite the "
-            "original analysis unless saved as a separate preset."
+        layout.addWidget(
+            PageHeader(
+                "Descriptor refinement",
+                "Descriptor Studio",
+                "Adjust transparent face measurements, compare a second preset "
+                "and inspect live descriptor similarity. The original analysis "
+                "is preserved unless a separate preset is explicitly saved.",
+                [self.reset_button, self.load_button, self.save_button],
+            )
         )
-        notice.setObjectName("Muted")
-        notice.setWordWrap(True)
-        layout.addWidget(notice)
+
+        self.activity = ActivityBanner(
+            "Run Face Analysis for the current project to unlock the studio."
+        )
+        layout.addWidget(self.activity)
 
         body = QHBoxLayout()
+        body.setSpacing(16)
 
         controls = QGroupBox("Editable descriptor")
+        controls.setObjectName("WorkspaceCard")
         controls_layout = QFormLayout(controls)
+        controls_layout.setContentsMargins(16, 20, 16, 16)
+        controls_layout.setHorizontalSpacing(18)
+        controls_layout.setVerticalSpacing(14)
 
         self.face_ratio = DescriptorSlider(0.80, 1.70, 0.005)
         self.eye_spacing = DescriptorSlider(0.20, 0.50, 0.002)
@@ -146,12 +151,15 @@ class DescriptorStudioPage(QWidget):
         controls_layout.addRow("Face shape", self.shape)
 
         self.similarity_label = QLabel("No comparison preset loaded.")
+        self.similarity_label.setObjectName("MetricValue")
         self.similarity_label.setWordWrap(True)
         controls_layout.addRow("Comparison", self.similarity_label)
         body.addWidget(controls, 1)
 
         visual_group = QGroupBox("Descriptor profile")
+        visual_group.setObjectName("WorkspaceCard")
         visual_layout = QVBoxLayout(visual_group)
+        visual_layout.setContentsMargins(16, 20, 16, 16)
         self.radar = RadarChart()
         visual_layout.addWidget(self.radar)
         body.addWidget(visual_group, 1)
@@ -159,14 +167,18 @@ class DescriptorStudioPage(QWidget):
         layout.addLayout(body)
 
         breakdown = QGroupBox("Live similarity breakdown")
+        breakdown.setObjectName("WorkspaceCard")
         breakdown_layout = QVBoxLayout(breakdown)
+        breakdown_layout.setContentsMargins(12, 18, 12, 12)
         self.table = QTableWidget(0, 3)
+        self.table.setObjectName("ResultsTable")
         self.table.setHorizontalHeaderLabels(
             ["Component", "Similarity", "Explanation"]
         )
-        self.table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         breakdown_layout.addWidget(self.table)
         layout.addWidget(breakdown, 1)
@@ -174,8 +186,10 @@ class DescriptorStudioPage(QWidget):
         self.set_enabled(False)
 
     def set_enabled(self, enabled: bool) -> None:
-        self.reset_button.setEnabled(enabled)
         for widget in (
+            self.reset_button,
+            self.save_button,
+            self.load_button,
             self.face_ratio,
             self.eye_spacing,
             self.eye_line,
@@ -199,6 +213,9 @@ class DescriptorStudioPage(QWidget):
             self.similarity_label.setText(
                 "Run Face Analysis for the current project first."
             )
+            self.activity.set_state(
+                "Run Face Analysis for the current project to unlock the studio."
+            )
             self.radar.set_descriptors(None, None)
             self.table.setRowCount(0)
             return
@@ -206,12 +223,22 @@ class DescriptorStudioPage(QWidget):
         analysis_path = directory / project.analysis_file
         if not analysis_path.exists():
             self.set_enabled(False)
+            self.activity.set_state("The saved analysis file could not be found.")
             return
 
-        payload = json.loads(analysis_path.read_text(encoding="utf-8"))
-        self.original = FaceDescriptor.from_analysis_payload(payload)
+        try:
+            payload = json.loads(analysis_path.read_text(encoding="utf-8"))
+            self.original = FaceDescriptor.from_analysis_payload(payload)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.set_enabled(False)
+            self.activity.set_state(f"Unable to load the saved analysis: {exc}")
+            return
+
         self.set_enabled(True)
         self.reset_to_analysis()
+        self.activity.set_state(
+            "Analysis loaded. Adjust measurements or load a comparison preset."
+        )
 
     def current_descriptor(self) -> FaceDescriptor:
         return FaceDescriptor(
@@ -225,20 +252,13 @@ class DescriptorStudioPage(QWidget):
     def reset_to_analysis(self) -> None:
         if self.original is None:
             return
-        self.face_ratio.set_value(
-            self.original.face_height_width_ratio
-        )
-        self.eye_spacing.set_value(
-            self.original.inter_eye_face_width_ratio
-        )
-        self.eye_line.set_value(
-            self.original.eye_line_face_height_ratio
-        )
-        self.mouth_line.set_value(
-            self.original.mouth_line_face_height_ratio
-        )
+        self.face_ratio.set_value(self.original.face_height_width_ratio)
+        self.eye_spacing.set_value(self.original.inter_eye_face_width_ratio)
+        self.eye_line.set_value(self.original.eye_line_face_height_ratio)
+        self.mouth_line.set_value(self.original.mouth_line_face_height_ratio)
         self.shape.setCurrentText(self.original.face_shape)
         self.refresh_live_view()
+        self.activity.set_state("Descriptor reset to the original analysis values.")
 
     def save_preset(self) -> None:
         if self.directory is None:
@@ -250,10 +270,8 @@ class DescriptorStudioPage(QWidget):
             "FaceStudio descriptor (*.json)",
         )
         if filename:
-            self.preset_store.save(
-                self.current_descriptor(),
-                Path(filename),
-            )
+            self.preset_store.save(self.current_descriptor(), Path(filename))
+            self.activity.set_state(f"Descriptor preset saved to {filename}.")
             self.descriptor_saved.emit()
 
     def load_comparison(self) -> None:
@@ -267,6 +285,7 @@ class DescriptorStudioPage(QWidget):
         if filename:
             self.comparison = self.preset_store.load(Path(filename))
             self.refresh_live_view()
+            self.activity.set_state(f"Comparison preset loaded: {filename}")
 
     def refresh_live_view(self, *args) -> None:
         if self.original is None:
@@ -287,9 +306,7 @@ class DescriptorStudioPage(QWidget):
             if self.comparison is not None
             else "Compared with original analysis"
         )
-        self.similarity_label.setText(
-            f"{label}: {result.similarity:.1%}"
-        )
+        self.similarity_label.setText(f"{label}: {result.similarity:.1%}")
 
         explanations = {
             "face_height_width_ratio": "Overall facial length compared with width.",
