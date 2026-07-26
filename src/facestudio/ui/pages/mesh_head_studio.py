@@ -5,19 +5,12 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator, QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QSlider,
-    QVBoxLayout,
-    QWidget,
+    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSlider,
+    QVBoxLayout, QWidget,
 )
 
+from facestudio.match_engine_research.auto_skin_finder import AutoSkinFinder, SkinCandidate
 from facestudio.match_engine_research.head_explorer import HeadExplorerService, HeadRecord
 from facestudio.match_engine_research.mesh_head_studio import MeshHeadStudioService
 
@@ -26,21 +19,23 @@ class MeshHeadStudioPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.service = MeshHeadStudioService()
+        self.skin_finder = AutoSkinFinder()
         self.head_service = HeadExplorerService()
         self.photo: Path | None = None
         self.mesh_source: Path | None = None
         self.heads_root: Path | None = None
         self.record: HeadRecord | None = None
         self.generated_texture = None
+        self.skin_candidates: tuple[SkinCandidate, ...] = ()
 
         root = QVBoxLayout(self)
-        title = QLabel("2D Photo to 3D Head — Mesh Studio")
+        title = QLabel("2D Photo to 3D Head — Mesh Studio Auto Finder")
         title.setObjectName("PageTitle")
         root.addWidget(title)
         summary = QLabel(
-            "Alpha 6 combines the photo, mesh-research and FM26 texture tools into one workflow. "
-            "Use a front-facing portrait, inspect a mesh source, preview the current local reconstruction, "
-            "and bake the same face into a known FM26 UV layout."
+            "Upload a portrait, let FaceStudio locate loose FM26 SKIN sets automatically, "
+            "select the strongest complete research candidate, preview the current local reconstruction, "
+            "and bake the portrait into a matching observed UV layout."
         )
         summary.setWordWrap(True)
         root.addWidget(summary)
@@ -53,7 +48,7 @@ class MeshHeadStudioPage(QWidget):
         root.addLayout(columns, 1)
 
         self.status = QLabel(
-            "Ready. A decoded FM26 SKIN mesh is not yet available; OBJ sources can be preview inputs and SKIN files remain research evidence."
+            "Ready. Auto Finder ranks complete loose asset sets; it does not claim visual mesh matching until SKIN geometry is decoded."
         )
         self.status.setWordWrap(True)
         root.addWidget(self.status)
@@ -72,13 +67,23 @@ class MeshHeadStudioPage(QWidget):
         return box
 
     def _build_reconstruction_panel(self) -> QWidget:
-        box = QGroupBox("2. Reconstruction source")
+        box = QGroupBox("2. Auto-find reconstruction source")
         layout = QVBoxLayout(box)
-        self.mesh_preview = self._preview("Select OBJ or SKIN research file")
-        layout.addWidget(self.mesh_preview, 1)
-        choose = QPushButton("Choose mesh source")
-        choose.clicked.connect(self.choose_mesh)
-        layout.addWidget(choose)
+        self.search_root = QLineEdit()
+        self.search_root.setPlaceholderText("Optional heads folder; blank uses Steam defaults")
+        browse = QPushButton("Browse folder")
+        browse.clicked.connect(self.choose_search_root)
+        auto = QPushButton("Automatically locate SKIN files")
+        auto.clicked.connect(self.auto_find_skins)
+        layout.addWidget(self.search_root)
+        layout.addWidget(browse)
+        layout.addWidget(auto)
+        self.skin_list = QListWidget()
+        self.skin_list.currentItemChanged.connect(self.select_skin_candidate)
+        layout.addWidget(self.skin_list, 1)
+        manual = QPushButton("Choose OBJ or SKIN manually")
+        manual.clicked.connect(self.choose_mesh)
+        layout.addWidget(manual)
         self.mesh_info = QLabel("No mesh source selected")
         self.mesh_info.setWordWrap(True)
         layout.addWidget(self.mesh_info)
@@ -167,6 +172,56 @@ class MeshHeadStudioPage(QWidget):
         self.photo_info.setText(f"{assessment.width}×{assessment.height} • {assessment.quality}\n{notes}")
         self.refresh_preview()
 
+    def choose_search_root(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "Choose folder to search for SKIN files")
+        if selected:
+            self.search_root.setText(selected)
+
+    def auto_find_skins(self) -> None:
+        text = self.search_root.text().strip()
+        explicit = Path(text) if text else None
+        try:
+            result = self.skin_finder.scan(explicit, limit=100)
+        except ValueError as exc:
+            QMessageBox.warning(self, "No SKIN library found", str(exc))
+            return
+        self.skin_candidates = result.candidates
+        self.skin_list.clear()
+        for index, candidate in enumerate(self.skin_candidates):
+            item = QListWidgetItem(f"{candidate.player_id} • {candidate.score}% evidence • {Path(candidate.skin_path).name}")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            self.skin_list.addItem(item)
+        roots = ", ".join(result.roots_scanned)
+        self.status.setText(
+            f"Found {result.skin_count} SKIN files in {roots}. Showing {len(result.candidates)} ranked complete candidates. "
+            "Scores measure associated-file completeness, not decoded facial similarity."
+        )
+        if self.skin_candidates:
+            self.skin_list.setCurrentRow(0)
+
+    def select_skin_candidate(self, current: QListWidgetItem | None, previous: QListWidgetItem | None = None) -> None:
+        del previous
+        if current is None:
+            return
+        index = current.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or not 0 <= index < len(self.skin_candidates):
+            return
+        candidate = self.skin_candidates[index]
+        self.mesh_source = Path(candidate.skin_path)
+        self.unique_id.setText(candidate.player_id)
+        folder = self.mesh_source.parent
+        self.heads_path.setText(str(folder))
+        self.search_root.setText(str(folder))
+        reasons = ", ".join(candidate.reasons)
+        self.mesh_info.setText(
+            f"Selected {self.mesh_source.name}\nEvidence score: {candidate.score}%\n{reasons}\n"
+            "SKIN remains research-only until geometry and UV fields are decoded."
+        )
+        if candidate.face_png:
+            pixmap = QPixmap(candidate.face_png)
+            if not pixmap.isNull():
+                self.texture_preview.setPixmap(pixmap.scaled(self.texture_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
     def choose_mesh(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(self, "Choose mesh source", "", "Mesh research files (*.obj *.skin);;All files (*)")
         if not selected:
@@ -177,8 +232,7 @@ class MeshHeadStudioPage(QWidget):
         except ValueError as exc:
             QMessageBox.critical(self, "Mesh error", str(exc))
             return
-        self.mesh_preview.setText(assessment.source_type)
-        self.mesh_info.setText("\n".join(assessment.notes))
+        self.mesh_info.setText(assessment.source_type + "\n" + "\n".join(assessment.notes))
 
     def reconstruct(self) -> None:
         if self.photo is None:
@@ -188,7 +242,7 @@ class MeshHeadStudioPage(QWidget):
         mesh = self.service.assess_mesh_source(self.mesh_source)
         self.status.setText(
             "Head preview rebuilt from the portrait. "
-            + ("External OBJ selected for the next true mesh-rendering step." if mesh.usable_for_preview else "No decoded renderable FM26 mesh is currently available; showing the local reconstruction preview.")
+            + ("External OBJ selected for future true mesh rendering." if mesh.usable_for_preview else "Selected SKIN is catalogued but not decoded; showing the local reconstruction preview.")
         )
 
     def refresh_preview(self) -> None:
@@ -206,12 +260,10 @@ class MeshHeadStudioPage(QWidget):
             QMessageBox.warning(self, "Photo required", "Choose a portrait first.")
             return
         selected, _ = QFileDialog.getSaveFileName(self, "Save head preview", "facestudio-head-preview.png", "PNG files (*.png)")
-        if not selected:
-            return
-        result = self.service.build_head_preview(self.photo, self.yaw.value(), self.depth.value())
-        destination = Path(selected).with_suffix(".png")
-        if not result.preview.save(str(destination), "PNG"):
-            QMessageBox.critical(self, "Save failed", f"Could not save {destination}")
+        if selected:
+            result = self.service.build_head_preview(self.photo, self.yaw.value(), self.depth.value())
+            if not result.preview.save(str(Path(selected).with_suffix(".png")), "PNG"):
+                QMessageBox.critical(self, "Save failed", "Could not save the preview.")
 
     def choose_heads(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select FM26 heads folder")
@@ -256,8 +308,5 @@ class MeshHeadStudioPage(QWidget):
             QMessageBox.warning(self, "Nothing to export", "Bake a texture first.")
             return
         selected, _ = QFileDialog.getSaveFileName(self, "Export FM26 texture", f"{self.record.player_id}.png", "PNG files (*.png)")
-        if not selected:
-            return
-        destination = Path(selected).with_suffix(".png")
-        if not self.generated_texture.save(str(destination), "PNG"):
-            QMessageBox.critical(self, "Export failed", f"Could not save {destination}")
+        if selected and not self.generated_texture.save(str(Path(selected).with_suffix(".png")), "PNG"):
+            QMessageBox.critical(self, "Export failed", "Could not save the texture.")
