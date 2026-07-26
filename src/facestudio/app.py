@@ -7,6 +7,7 @@ from facestudio.ui.alpha_window import AlphaMainWindow
 from facestudio.utils.config import AppConfig
 from facestudio.utils.logging_setup import configure_logging
 from facestudio.utils.paths import app_data_dir
+from facestudio.version import APP_NAME, APP_VERSION, PACKAGE_VERSION
 
 
 def main() -> int:
@@ -15,9 +16,9 @@ def main() -> int:
     configure_logging(data_dir / "logs")
 
     app = QApplication(sys.argv)
-    app.setApplicationName("FM FaceStudio")
-    app.setApplicationDisplayName("FM FaceStudio — Alpha 0.8.0 Build 2")
-    app.setApplicationVersion("0.8.0-build.2")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(f"{APP_NAME} — {APP_VERSION}")
+    app.setApplicationVersion(PACKAGE_VERSION)
     app.setOrganizationName("ItzPadzs")
 
     config_path = data_dir / "facestudio-settings.json"
