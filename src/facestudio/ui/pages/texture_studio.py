@@ -5,21 +5,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QFileDialog,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QSlider,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
+    QCheckBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from facestudio.match_engine_research.auto_texture import AutoTextureAssistant
 from facestudio.match_engine_research.head_explorer import HeadExplorerService, HeadRecord
 from facestudio.match_engine_research.texture_studio import TextureStudioService, TextureStudioSettings
 
@@ -29,52 +19,60 @@ class TextureStudioPage(QWidget):
         super().__init__()
         self.head_service = HeadExplorerService()
         self.texture_service = TextureStudioService()
+        self.auto_assistant = AutoTextureAssistant()
         self.record: HeadRecord | None = None
         self.heads_root: Path | None = None
         self.photo: Path | None = None
+        self.generated = None
 
         root = QVBoxLayout(self)
-        title = QLabel("Texture Studio")
+        title = QLabel("Texture Studio — Automatic")
         title.setObjectName("PageTitle")
         root.addWidget(title)
         summary = QLabel(
-            "Create a controlled photo-to-FM26 UV texture draft using a known unique ID and that ID's existing face PNG as the observed layout template. Originals are never overwritten."
+            "Choose a unique ID and a front-facing photo, then let FaceStudio create a local automatic first-pass texture and a rotatable 3D-style likeness preview. Originals are never overwritten."
         )
         summary.setWordWrap(True)
         root.addWidget(summary)
 
-        source_box = QGroupBox("1. Sources")
-        source_form = QFormLayout(source_box)
+        sources = QGroupBox("1. Choose sources")
+        form = QFormLayout(sources)
         self.heads_path = QLineEdit()
         self.unique_id = QLineEdit()
         self.unique_id.setValidator(QIntValidator(0, 2_147_483_647, self))
         self.photo_path = QLineEdit()
         self.photo_path.setReadOnly(True)
-        source_form.addRow("FM26 heads folder", self._path_row(self.heads_path, self.choose_heads))
-        find_row = QWidget()
-        find_layout = QHBoxLayout(find_row)
-        find_layout.setContentsMargins(0, 0, 0, 0)
-        find_layout.addWidget(self.unique_id, 1)
-        find = QPushButton("Load unique ID")
-        find.clicked.connect(self.load_unique_id)
-        find_layout.addWidget(find)
-        source_form.addRow("Unique ID", find_row)
-        source_form.addRow("Front-facing photo", self._path_row(self.photo_path, self.choose_photo))
-        root.addWidget(source_box)
+        form.addRow("FM26 heads folder", self._path_row(self.heads_path, self.choose_heads))
+        form.addRow("Unique ID", self.unique_id)
+        form.addRow("Front-facing photo", self._path_row(self.photo_path, self.choose_photo))
+        root.addWidget(sources)
 
-        controls = QGroupBox("2. Align and blend")
-        form = QFormLayout(controls)
+        actions = QHBoxLayout()
+        load = QPushButton("Load unique ID")
+        load.clicked.connect(self.load_unique_id)
+        auto = QPushButton("Create automatically")
+        auto.clicked.connect(self.create_automatically)
+        export = QPushButton("Export texture PNG")
+        export.clicked.connect(self.export_texture)
+        actions.addWidget(load)
+        actions.addWidget(auto)
+        actions.addStretch(1)
+        actions.addWidget(export)
+        root.addLayout(actions)
+
+        advanced = QGroupBox("Optional fine tuning")
+        fine = QFormLayout(advanced)
         self.crop_x = self._spin(0, 100, 50)
-        self.crop_y = self._spin(0, 100, 38)
-        self.crop_size = self._spin(10, 100, 62)
+        self.crop_y = self._spin(0, 100, 40)
+        self.crop_size = self._spin(10, 100, 60)
         self.target_x = self._spin(0, 100, 29)
         self.target_y = self._spin(0, 100, 18)
         self.target_width = self._spin(10, 100, 42)
         self.target_height = self._spin(10, 100, 57)
-        self.opacity = self._spin(5, 100, 92)
-        self.feather = self._spin(0, 100, 12)
+        self.opacity = self._spin(5, 100, 94)
+        self.feather = self._spin(0, 100, 22)
         self.brightness = self._spin(-100, 100, 0)
-        self.saturation = self._spin(0, 100, 100)
+        self.saturation = self._spin(0, 150, 92)
         self.exclude_hair = QCheckBox("Fade source hair at the top edge")
         self.exclude_hair.setChecked(True)
         for label, control in (
@@ -85,34 +83,44 @@ class TextureStudioPage(QWidget):
             ("Edge feather %", self.feather), ("Brightness", self.brightness),
             ("Saturation %", self.saturation),
         ):
-            form.addRow(label, control)
-            control.valueChanged.connect(self.refresh_preview)
-        form.addRow("Hair handling", self.exclude_hair)
-        self.exclude_hair.toggled.connect(self.refresh_preview)
-        root.addWidget(controls)
+            fine.addRow(label, control)
+            control.valueChanged.connect(self.refresh_manual)
+        fine.addRow("Hair handling", self.exclude_hair)
+        self.exclude_hair.toggled.connect(self.refresh_manual)
+        advanced.setCheckable(True)
+        advanced.setChecked(False)
+        root.addWidget(advanced)
 
-        preview_row = QHBoxLayout()
-        self.template_preview = QLabel("Load a unique ID")
-        self.result_preview = QLabel("Choose a photo")
-        for widget in (self.template_preview, self.result_preview):
-            widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            widget.setMinimumSize(300, 300)
-            preview_row.addWidget(widget, 1)
-        root.addLayout(preview_row, 1)
+        previews = QHBoxLayout()
+        self.template_preview = self._preview("Load a unique ID")
+        self.texture_preview = self._preview("Choose a photo")
+        self.head_preview = self._preview("Create a texture")
+        previews.addWidget(self.template_preview, 1)
+        previews.addWidget(self.texture_preview, 1)
+        previews.addWidget(self.head_preview, 1)
+        root.addLayout(previews, 1)
 
-        actions = QHBoxLayout()
-        reset = QPushButton("Reset controls")
-        reset.clicked.connect(self.reset_controls)
-        save = QPushButton("Export texture PNG")
-        save.clicked.connect(self.export_texture)
-        actions.addWidget(reset)
-        actions.addStretch(1)
-        actions.addWidget(save)
-        root.addLayout(actions)
+        yaw_row = QHBoxLayout()
+        yaw_row.addWidget(QLabel("3D preview angle"))
+        self.yaw = QSlider(Qt.Orientation.Horizontal)
+        self.yaw.setRange(-60, 60)
+        self.yaw.setValue(0)
+        self.yaw.valueChanged.connect(self.refresh_head_preview)
+        yaw_row.addWidget(self.yaw, 1)
+        root.addLayout(yaw_row)
 
-        self.status = QLabel("Alpha 5.0 is a manual UV authoring studio. It does not yet guarantee that FM26 will accept the exported texture.")
+        self.status = QLabel(
+            "Automatic mode is local and deterministic; it does not upload photos. The preview is a 3D-style approximation, not the decoded FM26 mesh."
+        )
         self.status.setWordWrap(True)
         root.addWidget(self.status)
+
+    @staticmethod
+    def _preview(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumSize(260, 260)
+        return label
 
     @staticmethod
     def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
@@ -133,7 +141,7 @@ class TextureStudioPage(QWidget):
         return row
 
     def choose_heads(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "Select a copied FM26 heads folder")
+        selected = QFileDialog.getExistingDirectory(self, "Select the FM26 heads folder")
         if selected:
             self.heads_path.setText(selected)
 
@@ -142,7 +150,6 @@ class TextureStudioPage(QWidget):
         if selected:
             self.photo = Path(selected)
             self.photo_path.setText(selected)
-            self.refresh_preview()
 
     def load_unique_id(self) -> None:
         root = Path(self.heads_path.text().strip()).expanduser()
@@ -157,59 +164,81 @@ class TextureStudioPage(QWidget):
             return
         self.record = next((item for item in library.records if item.player_id == player_id), None)
         if self.record is None or self.record.face_png is None:
-            QMessageBox.information(self, "Texture not found", f"No face PNG was found for unique ID {player_id}.")
+            QMessageBox.information(self, "Texture not found", f"No face PNG was found for unique ID {player_id}. Choose an ID that exists in this heads folder.")
             self.record = None
             return
         self.heads_root = root.resolve()
-        template = self.heads_root / self.record.face_png
-        pixmap = QPixmap(str(template))
+        pixmap = QPixmap(str(self.heads_root / self.record.face_png))
         self.template_preview.setPixmap(pixmap.scaled(self.template_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        self.status.setText(f"Loaded unique ID {player_id}. Optional name: {self.record.player_name}. Adjust the controls, then export a separate PNG.")
-        self.refresh_preview()
+        self.status.setText(f"Loaded unique ID {player_id}. Choose a photo and click Create automatically.")
+
+    def create_automatically(self) -> None:
+        if self.record is None or self.heads_root is None or self.photo is None or self.record.face_png is None:
+            QMessageBox.warning(self, "Sources required", "Load a valid unique ID and choose a photo first.")
+            return
+        try:
+            result = self.auto_assistant.generate(self.record.player_id, self.photo, self.heads_root / self.record.face_png)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Automatic conversion failed", str(exc))
+            return
+        self.generated = result.texture
+        self.apply_settings(result.settings)
+        self.show_texture(result.texture)
+        self.refresh_head_preview()
+        self.status.setText(f"Automatic draft created — confidence {result.confidence}%. " + " ".join(result.notes))
 
     def settings(self) -> TextureStudioSettings:
         return TextureStudioSettings(
             crop_x=self.crop_x.value(), crop_y=self.crop_y.value(), crop_size=self.crop_size.value(),
-            target_x=self.target_x.value(), target_y=self.target_y.value(),
-            target_width=self.target_width.value(), target_height=self.target_height.value(),
-            opacity=self.opacity.value(), feather=self.feather.value(), brightness=self.brightness.value(),
-            saturation=self.saturation.value(), exclude_hair=self.exclude_hair.isChecked(),
+            target_x=self.target_x.value(), target_y=self.target_y.value(), target_width=self.target_width.value(),
+            target_height=self.target_height.value(), opacity=self.opacity.value(), feather=self.feather.value(),
+            brightness=self.brightness.value(), saturation=self.saturation.value(), exclude_hair=self.exclude_hair.isChecked(),
         )
 
-    def refresh_preview(self) -> None:
+    def apply_settings(self, value: TextureStudioSettings) -> None:
+        for control, setting in (
+            (self.crop_x, value.crop_x), (self.crop_y, value.crop_y), (self.crop_size, value.crop_size),
+            (self.target_x, value.target_x), (self.target_y, value.target_y), (self.target_width, value.target_width),
+            (self.target_height, value.target_height), (self.opacity, value.opacity), (self.feather, value.feather),
+            (self.brightness, value.brightness), (self.saturation, value.saturation),
+        ):
+            control.blockSignals(True)
+            control.setValue(setting)
+            control.blockSignals(False)
+        self.exclude_hair.setChecked(value.exclude_hair)
+
+    def refresh_manual(self) -> None:
         if self.record is None or self.heads_root is None or self.photo is None or self.record.face_png is None:
             return
         try:
-            image = self.texture_service.render(self.record.player_id, self.photo, self.heads_root / self.record.face_png, self.settings())
+            self.generated = self.texture_service.render(self.record.player_id, self.photo, self.heads_root / self.record.face_png, self.settings())
         except (OSError, ValueError):
             return
-        pixmap = QPixmap.fromImage(image)
-        self.result_preview.setPixmap(pixmap.scaled(self.result_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.show_texture(self.generated)
+        self.refresh_head_preview()
 
-    def reset_controls(self) -> None:
-        defaults = TextureStudioSettings()
-        for control, value in (
-            (self.crop_x, defaults.crop_x), (self.crop_y, defaults.crop_y), (self.crop_size, defaults.crop_size),
-            (self.target_x, defaults.target_x), (self.target_y, defaults.target_y),
-            (self.target_width, defaults.target_width), (self.target_height, defaults.target_height),
-            (self.opacity, defaults.opacity), (self.feather, defaults.feather),
-            (self.brightness, defaults.brightness), (self.saturation, defaults.saturation),
-        ):
-            control.setValue(value)
-        self.exclude_hair.setChecked(defaults.exclude_hair)
+    def show_texture(self, image) -> None:
+        pixmap = QPixmap.fromImage(image)
+        self.texture_preview.setPixmap(pixmap.scaled(self.texture_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def refresh_head_preview(self) -> None:
+        if self.generated is None:
+            return
+        image = self.auto_assistant.preview_head(self.generated, self.yaw.value())
+        pixmap = QPixmap.fromImage(image)
+        self.head_preview.setPixmap(pixmap.scaled(self.head_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def export_texture(self) -> None:
-        if self.record is None or self.heads_root is None or self.photo is None or self.record.face_png is None:
-            QMessageBox.warning(self, "Sources required", "Load a unique ID with a face PNG and choose a photo first.")
+        if self.generated is None or self.record is None:
+            QMessageBox.warning(self, "Nothing to export", "Create an automatic or manually adjusted texture first.")
             return
-        selected, _ = QFileDialog.getSaveFileName(self, "Export texture PNG", f"{self.record.player_id}-texture-studio.png", "PNG files (*.png)")
+        selected, _ = QFileDialog.getSaveFileName(self, "Export texture PNG", f"{self.record.player_id}-auto-texture.png", "PNG files (*.png)")
         if not selected:
             return
-        try:
-            result = self.texture_service.save(
-                self.record.player_id, self.photo, self.heads_root / self.record.face_png, Path(selected), self.settings()
-            )
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Export failed", str(exc))
+        destination = Path(selected)
+        if destination.suffix.lower() != ".png":
+            destination = destination.with_suffix(".png")
+        if not self.generated.save(str(destination), "PNG"):
+            QMessageBox.critical(self, "Export failed", f"Could not save {destination}")
             return
-        QMessageBox.information(self, "Texture exported", f"Saved to:\n{result.destination}\n\nNo FM26 source files were changed.")
+        QMessageBox.information(self, "Texture exported", f"Saved to:\n{destination}\n\nNo FM26 source files were changed.")
