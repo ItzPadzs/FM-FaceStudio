@@ -12,16 +12,9 @@ from facestudio.utils.config import AppConfig
 from facestudio.version import APP_NAME, APP_VERSION
 
 _SHELL_BASE = """
-QLabel {
-    background: transparent;
-}
-QFrame#Sidebar {
-    border-right-width: 1px;
-}
-QLabel#Brand {
-    padding: 0;
-    margin: 0;
-}
+QLabel { background: transparent; }
+QFrame#Sidebar { border-right-width: 1px; }
+QLabel#Brand { padding: 0; margin: 0; }
 QLabel#VersionLabel {
     font-size: 9pt;
     font-weight: 700;
@@ -42,19 +35,10 @@ QPushButton#NavButton {
     border-radius: 9px;
     padding: 9px 13px;
 }
-QPushButton#NavButton:checked {
-    font-weight: 700;
-}
-QStatusBar {
-    min-height: 24px;
-    padding-left: 8px;
-}
-QFrame#ToastNotification {
-    border-radius: 11px;
-}
-QLabel#ToastMessage {
-    font-weight: 600;
-}
+QPushButton#NavButton:checked { font-weight: 700; }
+QStatusBar { min-height: 24px; padding-left: 8px; }
+QFrame#ToastNotification { border-radius: 11px; }
+QLabel#ToastMessage { font-weight: 600; }
 QPushButton#ToastClose {
     border: none;
     background: transparent;
@@ -62,41 +46,33 @@ QPushButton#ToastClose {
     text-align: center;
     font-size: 14pt;
 }
-QFrame#ActivityBanner {
-    border-radius: 10px;
-}
-QLabel#ActivityMessage {
-    font-weight: 600;
-    padding: 2px;
-}
+QFrame#ActivityBanner { border-radius: 10px; }
+QLabel#ActivityMessage { font-weight: 600; padding: 2px; }
 QProgressBar#ActivityProgress {
     min-height: 8px;
     max-height: 8px;
     border-radius: 4px;
     text-visible: false;
 }
-QGroupBox#WorkspaceCard {
-    font-weight: 700;
-}
-QLabel#PreviewSurface {
-    border-radius: 10px;
-    padding: 12px;
-}
-QLabel#MetricValue {
-    font-weight: 700;
-}
+QGroupBox#WorkspaceCard { font-weight: 700; }
+QLabel#PreviewSurface { border-radius: 10px; padding: 12px; }
+QLabel#MetricValue { font-weight: 700; }
 QPlainTextEdit#AnalysisDetails,
-QTableWidget#ResultsTable {
-    border-radius: 8px;
-    padding: 4px;
-}
-QTableWidget#ResultsTable::item {
-    padding: 6px;
-}
+QTableWidget#ResultsTable { border-radius: 8px; padding: 4px; }
+QTableWidget#ResultsTable::item { padding: 6px; }
 QHeaderView::section {
     border: none;
     padding: 8px;
     font-weight: 700;
+}
+QFrame#CurrentProjectCard,
+QFrame#EmptyWorkspaceCard { border-radius: 12px; }
+QLabel#ProjectProgress { font-weight: 700; }
+QPushButton#ProjectWorkspaceButton {
+    min-height: 86px;
+    padding: 15px 16px;
+    text-align: left;
+    border-radius: 11px;
 }
 """
 
@@ -147,6 +123,24 @@ QHeaderView::section {
     color: #dce4ef;
     border-bottom: 1px solid #3a4453;
 }
+QFrame#CurrentProjectCard {
+    background: #192331;
+    border: 1px solid #345172;
+}
+QFrame#EmptyWorkspaceCard {
+    background: #181c23;
+    border: 1px dashed #3a4453;
+}
+QLabel#ProjectProgress { color: #8fbaff; }
+QPushButton#ProjectWorkspaceButton {
+    background: #1a1f27;
+    border: 1px solid #303a48;
+    color: #e8edf4;
+}
+QPushButton#ProjectWorkspaceButton:hover {
+    background: #202936;
+    border-color: #4a78ad;
+}
 """
 
 _LIGHT_SHELL = """
@@ -196,6 +190,24 @@ QHeaderView::section {
     color: #2c3542;
     border-bottom: 1px solid #d3dbe5;
 }
+QFrame#CurrentProjectCard {
+    background: #edf5ff;
+    border: 1px solid #a9c8eb;
+}
+QFrame#EmptyWorkspaceCard {
+    background: #ffffff;
+    border: 1px dashed #bcc8d7;
+}
+QLabel#ProjectProgress { color: #245f9f; }
+QPushButton#ProjectWorkspaceButton {
+    background: #ffffff;
+    border: 1px solid #d5dce6;
+    color: #242a33;
+}
+QPushButton#ProjectWorkspaceButton:hover {
+    background: #edf4fc;
+    border-color: #78a6dc;
+}
 """
 
 _TOAST_KEYWORDS = (
@@ -218,6 +230,9 @@ class AlphaMainWindow(MainWindow):
         super().__init__(config, config_path)
         self.toast = ToastNotification(self.centralWidget())
         self.status.messageChanged.connect(self._status_message_changed)
+        self.dashboard.import_photo_requested.connect(self.import_photo)
+        self.dashboard.current_project_requested.connect(lambda: self.navigate(1))
+        self.dashboard.set_current_project(None, None)
         self._polish_alpha_shell()
 
     def apply_theme(self, theme: str) -> None:
@@ -273,30 +288,44 @@ class AlphaMainWindow(MainWindow):
         if normalised and any(word in normalised for word in _TOAST_KEYWORDS):
             self.toast.show_message(message)
 
+    def _refresh_workspace_project(self, dirty: bool = False) -> None:
+        if not self.session.is_open:
+            self.dashboard.set_current_project(None, None)
+            return
+        project = self.session.project
+        self.dashboard.set_current_project(
+            project.name,
+            str(self.session.directory),
+            project.source_photo,
+            project.analysis_file,
+            dirty,
+        )
+
     def _set_session(self, project, directory: Path) -> None:
         super()._set_session(project, directory)
         self.setWindowTitle(f"{project.name} — {APP_NAME}")
-        self.project_label.setText(
-            f"{project.name}\nReady • {directory.name}"
-        )
+        self.project_label.setText(f"{project.name}\nReady • {directory.name}")
+        self._refresh_workspace_project()
 
     def mark_dirty(self) -> None:
         super().mark_dirty()
         if self.session.is_open:
-            self.setWindowTitle(
-                f"{self.session.project.name} * — {APP_NAME}"
-            )
+            self.setWindowTitle(f"{self.session.project.name} * — {APP_NAME}")
             self.project_label.setText(
                 f"{self.session.project.name}\nUnsaved changes"
             )
+            self._refresh_workspace_project(dirty=True)
 
     def save_project(self, silent: bool = False) -> bool:
         saved = super().save_project(silent=silent)
         if saved and self.session.is_open:
-            self.setWindowTitle(
-                f"{self.session.project.name} — {APP_NAME}"
-            )
+            self.setWindowTitle(f"{self.session.project.name} — {APP_NAME}")
             self.project_label.setText(
                 f"{self.session.project.name}\nSaved • {self.session.directory.name}"
             )
+            self._refresh_workspace_project()
         return saved
+
+    def import_photo(self) -> None:
+        super().import_photo()
+        self._refresh_workspace_project(dirty=self.session.dirty)
