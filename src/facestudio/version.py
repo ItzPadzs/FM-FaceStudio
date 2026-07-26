@@ -1,6 +1,6 @@
 from __future__ import annotations
 
 APP_NAME = "FM FaceStudio"
-APP_VERSION = "Alpha 6.0.0 — Mesh Head Studio"
-PACKAGE_VERSION = "6.0.0-alpha"
-APP_TAGLINE = "Open-source FM26 mesh research, 2D-photo head reconstruction and UV texture authoring"
+APP_VERSION = "Alpha 6.1.0 — Mesh Head Studio Auto Finder"
+PACKAGE_VERSION = "6.1.0-alpha"
+APP_TAGLINE = "Open-source FM26 automatic loose-SKIN discovery, mesh research and UV texture authoring"
