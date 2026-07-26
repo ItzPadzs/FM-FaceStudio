@@ -18,6 +18,8 @@ class MeshViewport(QWidget):
         self.zoom = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        self.show_grid = True
+        self.show_vertices = True
         self.last_mouse_position: QPoint | None = None
         self.setMinimumSize(420, 360)
         self.setMouseTracking(True)
@@ -27,20 +29,37 @@ class MeshViewport(QWidget):
         self.reset_view()
 
     def reset_view(self) -> None:
-        self.yaw = -25.0
-        self.pitch = 15.0
+        self.set_view(-25.0, 15.0)
+
+    def set_view(self, yaw: float, pitch: float) -> None:
+        self.yaw = yaw
+        self.pitch = pitch
         self.zoom = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.update()
 
+    def zoom_in(self) -> None:
+        self.zoom = min(8.0, self.zoom * 1.2)
+        self.update()
+
+    def zoom_out(self) -> None:
+        self.zoom = max(0.15, self.zoom / 1.2)
+        self.update()
+
+    def set_grid_visible(self, visible: bool) -> None:
+        self.show_grid = visible
+        self.update()
+
+    def set_vertices_visible(self, visible: bool) -> None:
+        self.show_vertices = visible
+        self.update()
+
     def _rotate(self, vertex: Vec3) -> tuple[float, float, float]:
         yaw = math.radians(self.yaw)
         pitch = math.radians(self.pitch)
-
         x1 = vertex.x * math.cos(yaw) + vertex.z * math.sin(yaw)
         z1 = -vertex.x * math.sin(yaw) + vertex.z * math.cos(yaw)
-
         y2 = vertex.y * math.cos(pitch) - z1 * math.sin(pitch)
         z2 = vertex.y * math.sin(pitch) + z1 * math.cos(pitch)
         return x1, y2, z2
@@ -60,11 +79,11 @@ class MeshViewport(QWidget):
         )
         return [
             Vec3(
-                (v.x - centre_x) / largest,
-                (v.y - centre_y) / largest,
-                (v.z - centre_z) / largest,
+                (vertex.x - centre_x) / largest,
+                (vertex.y - centre_y) / largest,
+                (vertex.z - centre_z) / largest,
             )
-            for v in self.mesh.vertices
+            for vertex in self.mesh.vertices
         ]
 
     def paintEvent(self, event) -> None:
@@ -76,14 +95,15 @@ class MeshViewport(QWidget):
             self.width() / 2.0 + self.pan_x,
             self.height() / 2.0 + self.pan_y,
         )
-        grid_pen = QPen(self.palette().mid().color())
-        grid_pen.setWidth(1)
-        painter.setPen(grid_pen)
-        spacing = 40
-        for x in range(int(centre.x()) % spacing, self.width(), spacing):
-            painter.drawLine(x, 0, x, self.height())
-        for y in range(int(centre.y()) % spacing, self.height(), spacing):
-            painter.drawLine(0, y, self.width(), y)
+        if self.show_grid:
+            grid_pen = QPen(self.palette().mid().color())
+            grid_pen.setWidth(1)
+            painter.setPen(grid_pen)
+            spacing = 40
+            for x in range(int(centre.x()) % spacing, self.width(), spacing):
+                painter.drawLine(x, 0, x, self.height())
+            for y in range(int(centre.y()) % spacing, self.height(), spacing):
+                painter.drawLine(0, y, self.width(), y)
 
         if self.mesh is None:
             painter.setPen(self.palette().text().color())
@@ -114,7 +134,6 @@ class MeshViewport(QWidget):
         mesh_pen = QPen(self.palette().highlight().color())
         mesh_pen.setWidthF(1.2)
         painter.setPen(mesh_pen)
-
         edges = sorted(
             self.mesh.edges,
             key=lambda edge: (
@@ -124,7 +143,7 @@ class MeshViewport(QWidget):
         for start, end in edges:
             painter.drawLine(projected[start][0], projected[end][0])
 
-        if self.mesh.vertex_count <= 2500:
+        if self.show_vertices and self.mesh.vertex_count <= 2500:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self.palette().highlight())
             for point, _ in projected:
@@ -140,7 +159,6 @@ class MeshViewport(QWidget):
         current = event.position().toPoint()
         delta = current - self.last_mouse_position
         self.last_mouse_position = current
-
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.pan_x += delta.x()
             self.pan_y += delta.y()
