@@ -56,7 +56,7 @@ class DashboardPage(QWidget):
         status_grid = QGridLayout()
         cards = [
             ("FM26 installation", install_text),
-            ("Current sprint", "Sprint 6 — Face Matcher"),
+            ("Current sprint", "Sprint 7 — Descriptor Studio"),
             ("Autosave", "Enabled"),
             ("Safety", "Read-only"),
         ]

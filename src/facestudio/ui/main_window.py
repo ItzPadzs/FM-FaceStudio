@@ -31,6 +31,7 @@ from facestudio.ui.pages.projects import ProjectsPage
 from facestudio.ui.pages.mesh_viewer import MeshViewerPage
 from facestudio.ui.pages.face_analysis import FaceAnalysisPage
 from facestudio.ui.pages.face_matcher import FaceMatcherPage
+from facestudio.ui.pages.descriptor_studio import DescriptorStudioPage
 from facestudio.ui.pages.settings import SettingsPage
 from facestudio.ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 from facestudio.ui.workers import (
@@ -63,7 +64,7 @@ class MainWindow(QMainWindow):
         self.match_thread: QThread | None = None
         self.match_worker: FaceMatchingWorker | None = None
 
-        self.setWindowTitle("FM FaceStudio — Sprint 6")
+        self.setWindowTitle("FM FaceStudio — Sprint 7")
         self.resize(1240, 800)
         self.setMinimumSize(QSize(960, 640))
 
@@ -85,7 +86,7 @@ class MainWindow(QMainWindow):
         brand = QLabel("FM FaceStudio")
         brand.setObjectName("Brand")
         side.addWidget(brand)
-        sprint = QLabel("SPRINT 6")
+        sprint = QLabel("SPRINT 7")
         sprint.setObjectName("Muted")
         side.addWidget(sprint)
         side.addSpacing(16)
@@ -125,6 +126,11 @@ class MainWindow(QMainWindow):
         self.face_matcher = FaceMatcherPage(catalogue_path)
         self.face_matcher.match_requested.connect(self.start_face_matching)
 
+        self.descriptor_studio = DescriptorStudioPage()
+        self.descriptor_studio.descriptor_saved.connect(
+            lambda: self.status.showMessage("Descriptor preset saved.", 4000)
+        )
+
         settings = SettingsPage(config)
         settings.theme_changed.connect(self.apply_theme)
         settings.settings_changed.connect(self.save_config)
@@ -136,6 +142,7 @@ class MainWindow(QMainWindow):
             ("Mesh Explorer", self.mesh_viewer),
             ("Face Analysis", self.face_analysis),
             ("Face Matcher", self.face_matcher),
+            ("Descriptor Studio", self.descriptor_studio),
             ("Export", PlaceholderPage("Export Centre", "Build validated packages with backup and restore.", "Disabled until game formats are fully validated.")),
             ("Settings", settings),
             ("About", AboutPage()),
@@ -168,7 +175,7 @@ class MainWindow(QMainWindow):
         self.refresh_recent_projects()
         self.navigate(0)
         self.apply_theme(config.theme)
-        LOGGER.info("Sprint 6 main window initialised")
+        LOGGER.info("Sprint 7 main window initialised")
 
     def navigate(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -258,6 +265,7 @@ class MainWindow(QMainWindow):
         self.projects_page.set_project(project, directory)
         self.face_analysis.set_project(project, directory)
         self.face_matcher.set_project(project, directory)
+        self.descriptor_studio.set_project(project, directory)
         self.project_label.setText(f"{project.name}\n{directory}")
         self.setWindowTitle(f"{project.name} — FM FaceStudio")
         self.config.last_project_path = str(directory)
@@ -370,6 +378,10 @@ class MainWindow(QMainWindow):
             self.session.project,
             self.session.directory,
         )
+        self.descriptor_studio.set_project(
+            self.session.project,
+            self.session.directory,
+        )
         self.status.showMessage("Photograph imported.", 4000)
 
     def open_asset_in_mesh_viewer(self, path: str) -> None:
@@ -433,6 +445,10 @@ class MainWindow(QMainWindow):
             Path(preview_path),
         )
         self.face_matcher.set_project(
+            self.session.project,
+            self.session.directory,
+        )
+        self.descriptor_studio.set_project(
             self.session.project,
             self.session.directory,
         )

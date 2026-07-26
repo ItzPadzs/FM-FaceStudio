@@ -1,15 +1,17 @@
 # Changelog
 
+## 0.7.0-alpha.1 — Sprint 7
+
+- Added interactive descriptor editing.
+- Added descriptor preset save/load.
+- Added side-by-side descriptor comparison.
+- Added radar-chart visualisation.
+- Added live similarity scoring.
+- Added component-level score explanations.
+
 ## 0.6.0-alpha.1 — Sprint 6
 
-- Added reusable face descriptors.
-- Added weighted similarity scoring.
-- Added ranked candidate results.
-- Added per-component match scores.
-- Added sample descriptor catalogue.
-- Added custom catalogue selection.
-- Added project-based `matches.json` persistence.
-- Added background matching worker.
+- Added face descriptor matching.
 
 ## 0.5.0-alpha.1 — Sprint 5
 
