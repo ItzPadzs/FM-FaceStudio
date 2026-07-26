@@ -28,6 +28,7 @@ from facestudio.ui.pages.asset_explorer import AssetExplorerPage
 from facestudio.ui.pages.base import PlaceholderPage
 from facestudio.ui.pages.dashboard import DashboardPage
 from facestudio.ui.pages.projects import ProjectsPage
+from facestudio.ui.pages.mesh_viewer import MeshViewerPage
 from facestudio.ui.pages.settings import SettingsPage
 from facestudio.ui.theme import DARK_STYLESHEET, LIGHT_STYLESHEET
 from facestudio.ui.workers import AssetScanWorker
@@ -52,7 +53,7 @@ class MainWindow(QMainWindow):
         self.scan_thread: QThread | None = None
         self.scan_worker: AssetScanWorker | None = None
 
-        self.setWindowTitle("FM FaceStudio — Sprint 3")
+        self.setWindowTitle("FM FaceStudio — Sprint 4")
         self.resize(1240, 800)
         self.setMinimumSize(QSize(960, 640))
 
@@ -74,7 +75,7 @@ class MainWindow(QMainWindow):
         brand = QLabel("FM FaceStudio")
         brand.setObjectName("Brand")
         side.addWidget(brand)
-        sprint = QLabel("SPRINT 3")
+        sprint = QLabel("SPRINT 4")
         sprint.setObjectName("Muted")
         side.addWidget(sprint)
         side.addSpacing(16)
@@ -96,8 +97,12 @@ class MainWindow(QMainWindow):
         self.asset_explorer = AssetExplorerPage(self.asset_database)
         self.asset_explorer.scan_requested.connect(self.start_asset_scan)
         self.asset_explorer.cancel_requested.connect(self.cancel_asset_scan)
+        self.asset_explorer.asset_open_requested.connect(self.open_asset_in_mesh_viewer)
         if config.fm_install_path:
             self.asset_explorer.root_path.setText(config.fm_install_path)
+
+        self.mesh_viewer = MeshViewerPage()
+        self.mesh_viewer.status_message.connect(self.status.showMessage)
 
         settings = SettingsPage(config)
         settings.theme_changed.connect(self.apply_theme)
@@ -107,7 +112,7 @@ class MainWindow(QMainWindow):
             ("Dashboard", self.dashboard),
             ("Project", self.projects_page),
             ("Asset Explorer", self.asset_explorer),
-            ("Mesh Viewer", PlaceholderPage("Mesh Viewer", "Inspect supported meshes in an interactive viewport.", "Planned for Sprint 4.")),
+            ("Mesh Explorer", self.mesh_viewer),
             ("Face AI", PlaceholderPage("Face AI", "Analyse a source photograph and create a reusable face descriptor.", "Planned for Sprint 5.")),
             ("Export", PlaceholderPage("Export Centre", "Build validated packages with backup and restore.", "Disabled until game formats are fully validated.")),
             ("Settings", settings),
@@ -141,7 +146,7 @@ class MainWindow(QMainWindow):
         self.refresh_recent_projects()
         self.navigate(0)
         self.apply_theme(config.theme)
-        LOGGER.info("Sprint 3 main window initialised")
+        LOGGER.info("Sprint 4 main window initialised")
 
     def navigate(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -334,6 +339,10 @@ class MainWindow(QMainWindow):
             self.session.directory,
         )
         self.status.showMessage("Photograph imported.", 4000)
+
+    def open_asset_in_mesh_viewer(self, path: str) -> None:
+        self.mesh_viewer.open_path(Path(path))
+        self.navigate(3)
 
     def start_asset_scan(self, path: str) -> None:
         if self.scan_thread is not None:

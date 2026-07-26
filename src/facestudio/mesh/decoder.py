@@ -1,17 +1,19 @@
-from __future__ import annotations
+"""Mesh-loading boundary.
 
-from dataclasses import dataclass
-from pathlib import Path
+Sprint 4 supports Wavefront OBJ files only. Football Manager `.skin` and
+other proprietary formats remain unsupported until their structures are
+validated independently.
+"""
 
+from facestudio.mesh.inspection import BinaryInspection, inspect_binary
+from facestudio.mesh.model import MeshData, Vec3
+from facestudio.mesh.obj_loader import ObjFormatError, load_obj
 
-@dataclass(frozen=True, slots=True)
-class MeshSummary:
-    source: Path
-    kind: str
-    vertex_count: int
-    triangle_count: int
-
-
-class SkinDecoder:
-    def inspect(self, path: Path) -> MeshSummary:
-        raise NotImplementedError("Decoder migration is planned for Alpha 0.3.")
+__all__ = [
+    "BinaryInspection",
+    "MeshData",
+    "ObjFormatError",
+    "Vec3",
+    "inspect_binary",
+    "load_obj",
+]

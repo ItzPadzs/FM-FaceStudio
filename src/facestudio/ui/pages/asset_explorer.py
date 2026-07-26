@@ -38,6 +38,7 @@ def readable_size(value: int) -> str:
 class AssetExplorerPage(QWidget):
     scan_requested = Signal(str)
     cancel_requested = Signal()
+    asset_open_requested = Signal(str)
 
     def __init__(self, database: AssetDatabase) -> None:
         super().__init__()
@@ -124,6 +125,7 @@ class AssetExplorerPage(QWidget):
         )
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.cellDoubleClicked.connect(self._open_selected_asset)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -133,8 +135,13 @@ class AssetExplorerPage(QWidget):
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
 
+        self._result_paths: list[str] = []
         self.refresh_filters()
         self.refresh_results()
+
+    def _open_selected_asset(self, row: int, column: int) -> None:
+        if 0 <= row < len(self._result_paths):
+            self.asset_open_requested.emit(self._result_paths[row])
 
     def _browse(self) -> None:
         directory = QFileDialog.getExistingDirectory(
@@ -215,6 +222,10 @@ class AssetExplorerPage(QWidget):
             "Results are limited to 5,000 rows."
         )
 
+        self._result_paths = [
+            str(Path(str(row['root_path'])) / str(row['relative_path']))
+            for row in rows
+        ]
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             values = [
