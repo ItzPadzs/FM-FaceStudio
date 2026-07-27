@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+import traceback
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QSlider, QSpinBox, QDoubleSpinBox,
-    QVBoxLayout, QWidget,
+    QApplication,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QDoubleSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from facestudio.texture_generator import HeadTextureGenerator, TextureBuildResult
@@ -27,7 +38,7 @@ class AutomaticFaceBuilderWindow(QMainWindow):
         self.template: Path | None = None
         self.output: Path = config_path.parent / "generated-head-textures"
         self.last_result: TextureBuildResult | None = None
-        self.setWindowTitle("FM FaceStudio — Alpha 9.0.0 — Portrait to Head Texture")
+        self.setWindowTitle("FM FaceStudio — Alpha 9.0.2 — Instant Texture Preview")
         self.resize(1420, 900)
         self.setMinimumSize(1040, 700)
         self.setStyleSheet(LIGHT_STYLESHEET if config.theme == "light" else DARK_STYLESHEET)
@@ -48,7 +59,7 @@ class AutomaticFaceBuilderWindow(QMainWindow):
         brand = QLabel("FM FaceStudio")
         brand.setObjectName("Brand")
         sl.addWidget(brand)
-        version = QLabel("ALPHA 9.0.0\nTEXTURE STUDIO")
+        version = QLabel("ALPHA 9.0.2\nTEXTURE STUDIO")
         version.setObjectName("Muted")
         sl.addWidget(version)
         sl.addSpacing(20)
@@ -58,9 +69,8 @@ class AutomaticFaceBuilderWindow(QMainWindow):
         sl.addWidget(active)
         sl.addStretch()
         note = QLabel(
-            "This workflow creates a square UV-style head texture for the existing "
-            "BepInEx face loader. It no longer searches for donor geometry or attempts "
-            "to reconstruct a 3D head."
+            "Upload a portrait and press Generate Head Texture. The completed PNG "
+            "appears immediately in the preview and is saved to the output folder."
         )
         note.setWordWrap(True)
         note.setObjectName("Muted")
@@ -74,9 +84,8 @@ class AutomaticFaceBuilderWindow(QMainWindow):
         title = QLabel("Create a Head Texture From One Photograph")
         title.setStyleSheet("font-size: 31px; font-weight: 700;")
         subtitle = QLabel(
-            "Upload a clear front-facing portrait. FaceStudio positions the face into "
-            "the observed 1024×1024 head-texture layout, extends the sides and neck, "
-            "blends seams and exports a PNG."
+            "Upload a clear front-facing portrait, then click Generate Head Texture. "
+            "FaceStudio creates and displays the square UV-style PNG immediately."
         )
         subtitle.setWordWrap(True)
         subtitle.setObjectName("Muted")
@@ -182,6 +191,7 @@ class AutomaticFaceBuilderWindow(QMainWindow):
             self.photo = Path(filename)
             self.photo_label.setText(filename)
             self._set_preview(self.preview, filename)
+            self.status.setText("Portrait loaded. Press Generate Head Texture to see the result.")
 
     def choose_template(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
@@ -201,8 +211,11 @@ class AutomaticFaceBuilderWindow(QMainWindow):
         if not self.photo:
             QMessageBox.information(self, "Texture Studio", "Upload a portrait first.")
             return
+
         self.build_button.setEnabled(False)
-        self.status.setText("Aligning the portrait, extending UV coverage and blending seams…")
+        self.status.setText("Generating texture…")
+        QApplication.processEvents()
+
         try:
             result = self.generator.build(
                 self.photo,
@@ -213,26 +226,32 @@ class AutomaticFaceBuilderWindow(QMainWindow):
                 face_y=self.y_box.value(),
                 smoothing=self.smooth_box.value(),
             )
+            if not result.texture.is_file():
+                raise RuntimeError("The generator finished without writing the PNG file.")
             self.last_result = result
             self._set_preview(self.result_preview, result.texture)
+            QApplication.processEvents()
             self.status.setText(
-                f"Texture generated: {result.texture.name}. Adjust face scale, vertical position "
-                "or smoothing and regenerate until it aligns correctly in game."
+                f"Done — {result.texture.name} is displayed and saved in {result.texture.parent}."
             )
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Texture generation failed", str(exc))
-            self.status.setText("Texture generation stopped. Check the selected image and output folder.")
+        except Exception as exc:
+            details = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            QMessageBox.critical(self, "Texture generation failed", details)
+            self.status.setText(f"Generation failed: {details}")
         finally:
             self.build_button.setEnabled(True)
 
     @staticmethod
     def _set_preview(label: QLabel, path) -> None:
         pixmap = QPixmap(str(path))
-        if not pixmap.isNull():
-            label.setPixmap(
-                pixmap.scaled(
-                    560, 500,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+        if pixmap.isNull():
+            label.setText(f"Could not preview image:\n{path}")
+            return
+        label.setPixmap(
+            pixmap.scaled(
+                560,
+                500,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
+        )

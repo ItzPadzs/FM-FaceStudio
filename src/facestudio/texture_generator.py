@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageOps
-except ModuleNotFoundError as exc:  # Keep the GUI launchable on older installs.
+except ModuleNotFoundError as exc:
     if exc.name != "PIL":
         raise
     Image = ImageDraw = ImageFilter = ImageOps = None  # type: ignore[assignment]
@@ -26,7 +25,7 @@ class TextureBuildResult:
 
 
 class HeadTextureGenerator:
-    """Generate an editable square head texture from one frontal portrait."""
+    """Generate a square UV-style head texture from one frontal portrait."""
 
     @staticmethod
     def available() -> bool:
@@ -59,20 +58,20 @@ class HeadTextureGenerator:
             raise ValueError(f"Photograph not found: {photo}")
         if size not in (512, 1024, 2048):
             raise ValueError("Texture size must be 512, 1024 or 2048")
-        output_directory.mkdir(parents=True, exist_ok=True)
 
-        source = Image.open(photo).convert("RGB")
-        source = ImageOps.exif_transpose(source)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        with Image.open(photo) as opened:
+            source = ImageOps.exif_transpose(opened).convert("RGB")
+
         source = self._square_face_crop(source, face_scale, face_y)
         source = source.resize((size, size), Image.Resampling.LANCZOS)
 
-        if template:
+        if template is not None:
             template_path = Path(template).expanduser().resolve()
             if not template_path.is_file():
                 raise ValueError(f"Template not found: {template_path}")
-            canvas = Image.open(template_path).convert("RGB").resize(
-                (size, size), Image.Resampling.LANCZOS
-            )
+            with Image.open(template_path) as opened:
+                canvas = opened.convert("RGB").resize((size, size), Image.Resampling.LANCZOS)
         else:
             canvas = self._neutral_canvas(source, size)
 
@@ -87,6 +86,7 @@ class HeadTextureGenerator:
 
         texture = output_directory / f"{photo.stem}-head-texture.png"
         canvas.save(texture, "PNG")
+
         manifest = output_directory / f"{photo.stem}-head-texture.json"
         manifest.write_text(
             json.dumps(
@@ -111,21 +111,20 @@ class HeadTextureGenerator:
                         "neck_start": 0.73,
                     },
                     "boundary": (
-                        "Produces a 2D UV-style texture only; it does not create "
-                        "or alter mesh geometry."
+                        "Produces a 2D UV-style texture only; it does not create or alter mesh geometry."
                     ),
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
-        return TextureBuildResult(texture, manifest, size)
+        return TextureBuildResult(texture=texture, manifest=manifest, size=size)
 
     @staticmethod
-    def _square_face_crop(image: Any, scale: float, y_offset: float) -> Any:
+    def _square_face_crop(image: Image.Image, scale: float, y_offset: float) -> Image.Image:
         width, height = image.size
-        side = int(min(width, height) / max(0.65, min(1.6, scale)))
-        side = max(1, min(side, width, height))
+        side = max(1, int(min(width, height) / max(0.65, min(1.6, scale))))
+        side = min(side, width, height)
         cx = width // 2
         cy = int(height * (0.50 + max(-0.25, min(0.25, y_offset))))
         left = max(0, min(width - side, cx - side // 2))
@@ -133,28 +132,25 @@ class HeadTextureGenerator:
         return image.crop((left, top, left + side, top + side))
 
     @staticmethod
-    def _neutral_canvas(source: Any, size: int) -> Any:
+    def _neutral_canvas(source: Image.Image, size: int) -> Image.Image:
         sample = source.crop(
             (int(size * 0.36), int(size * 0.58), int(size * 0.64), int(size * 0.82))
         )
-        colour = tuple(int(value) for value in ImageStatMean.mean(sample))
+        colour = sample.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
         return Image.new("RGB", (size, size), colour)
 
     @staticmethod
-    def _warp_central_face(source: Any, size: int) -> Any:
+    def _warp_central_face(source: Image.Image, size: int) -> Image.Image:
         resized = source.resize(
             (int(size * 0.70), int(size * 0.82)), Image.Resampling.LANCZOS
         )
-        out = Image.new(
-            "RGB",
-            (size, size),
-            resized.getpixel((resized.width // 2, resized.height - 1)),
-        )
+        fill = resized.getpixel((resized.width // 2, resized.height - 1))
+        out = Image.new("RGB", (size, size), fill)
         out.paste(resized, (int(size * 0.15), int(size * 0.10)))
         return out
 
     @staticmethod
-    def _face_mask(size: int) -> Any:
+    def _face_mask(size: int) -> Image.Image:
         mask = Image.new("L", (size, size), 0)
         draw = ImageDraw.Draw(mask)
         draw.ellipse(
@@ -168,7 +164,7 @@ class HeadTextureGenerator:
         return mask
 
     @staticmethod
-    def _extend_sides(image: Any, size: int) -> Any:
+    def _extend_sides(image: Image.Image, size: int) -> Image.Image:
         out = image.copy()
         left = image.crop(
             (int(size * 0.15), int(size * 0.18), int(size * 0.31), int(size * 0.92))
@@ -181,7 +177,7 @@ class HeadTextureGenerator:
         return out
 
     @staticmethod
-    def _extend_neck(image: Any, size: int) -> Any:
+    def _extend_neck(image: Image.Image, size: int) -> Image.Image:
         out = image.copy()
         strip = image.crop(
             (int(size * 0.20), int(size * 0.70), int(size * 0.80), int(size * 0.86))
@@ -191,16 +187,11 @@ class HeadTextureGenerator:
         return out
 
     @staticmethod
-    def _soften_seams(image: Any, amount: float) -> Any:
+    def _soften_seams(image: Image.Image, amount: float) -> Image.Image:
         amount = max(0.0, min(1.0, amount))
+        if amount == 0:
+            return image
         blurred = image.filter(
             ImageFilter.GaussianBlur(max(0.1, image.width * 0.004))
         )
         return Image.blend(image, blurred, amount * 0.25)
-
-
-class ImageStatMean:
-    @staticmethod
-    def mean(image: Any) -> tuple[float, float, float]:
-        tiny = image.resize((1, 1), Image.Resampling.BOX)
-        return tiny.getpixel((0, 0))
