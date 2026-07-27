@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QImageReader
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -17,7 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from facestudio.match_engine_research.geometry_dataset import GeometryDatasetService, HeadGeometryRecord
+from facestudio.match_engine_research.donor_selection import DonorSelectionService, LockedDonor
+from facestudio.match_engine_research.geometry_dataset import GeometryDatasetService, GeometryMatch, HeadGeometryRecord
 from facestudio.match_engine_research.one_click_face_builder import LANDMARK_ORDER, OneClickFaceBuilder, PhotoAnalysis
 from facestudio.ui.dialogs.render_dataset_builder_dialog import RenderDatasetBuilderDialog
 from facestudio.ui.widgets.landmark_editor import LandmarkEditor
@@ -28,17 +30,20 @@ class OneClickFaceBuilderPage(QWidget):
         super().__init__()
         self.service = OneClickFaceBuilder()
         self.dataset_service = GeometryDatasetService()
+        self.selection_service = DonorSelectionService()
         self.photo: Path | None = None
         self.analysis: PhotoAnalysis | None = None
         self.geometry_records: tuple[HeadGeometryRecord, ...] = ()
+        self.current_matches: tuple[GeometryMatch, ...] = ()
+        self.locked_donor: LockedDonor | None = None
         self._syncing_selection = False
 
         root = QVBoxLayout(self)
-        title = QLabel("FM26 Render Dataset & Geometry Matcher")
+        title = QLabel("FM26 Donor Review & Lock")
         title.setObjectName("PageTitle")
         root.addWidget(title)
         summary = QLabel(
-            "Drag portrait landmarks directly on the photograph. Import an existing calibrated dataset, or build one from standardised numeric-ID FM head renders inside FaceStudio."
+            "Drag-correct one portrait, match it against the calibrated FM26 geometry dataset, inspect each candidate render, then explicitly lock the donor head used by the next reconstruction stage."
         )
         summary.setWordWrap(True)
         root.addWidget(summary)
@@ -57,7 +62,7 @@ class OneClickFaceBuilderPage(QWidget):
 
         content = QHBoxLayout()
         source_box = QVBoxLayout()
-        source_title = QLabel("1. Drag portrait landmarks")
+        source_title = QLabel("1. Correct portrait")
         source_title.setObjectName("SectionTitle")
         source_box.addWidget(source_title)
         self.source_preview = LandmarkEditor()
@@ -72,12 +77,9 @@ class OneClickFaceBuilderPage(QWidget):
         source_box.addWidget(self.photo_status)
 
         editor_box = QVBoxLayout()
-        editor_title = QLabel("2. Live measurements")
+        editor_title = QLabel("2. Measurements")
         editor_title.setObjectName("SectionTitle")
         editor_box.addWidget(editor_title)
-        explanation = QLabel("Click and drag each green point onto the correct facial feature. The selected point turns amber and measurements update instantly.")
-        explanation.setWordWrap(True)
-        editor_box.addWidget(explanation)
         self.landmark_name = QComboBox()
         self.landmark_name.addItems(LANDMARK_ORDER)
         self.landmark_name.currentTextChanged.connect(self.select_landmark_from_list)
@@ -92,46 +94,74 @@ class OneClickFaceBuilderPage(QWidget):
         save_record.clicked.connect(self.save_record)
         editor_box.addWidget(save_record)
 
-        dataset_box = QVBoxLayout()
-        dataset_title = QLabel("3. Calibrated FM26 geometry")
-        dataset_title.setObjectName("SectionTitle")
-        dataset_box.addWidget(dataset_title)
-        self.dataset_status = QLabel(
-            "No calibrated geometry dataset loaded. Build one from standardised front renders or import an existing validated dataset. UV textures are rejected."
-        )
+        match_box = QVBoxLayout()
+        match_title = QLabel("3. Match and review")
+        match_title.setObjectName("SectionTitle")
+        match_box.addWidget(match_title)
+        self.dataset_status = QLabel("Build or import a calibrated render dataset.")
         self.dataset_status.setWordWrap(True)
-        dataset_box.addWidget(self.dataset_status)
+        match_box.addWidget(self.dataset_status)
         build_dataset = QPushButton("Build dataset from calibrated front renders")
         build_dataset.clicked.connect(self.open_dataset_builder)
-        dataset_box.addWidget(build_dataset)
+        match_box.addWidget(build_dataset)
         import_dataset = QPushButton("Import calibrated geometry dataset")
         import_dataset.clicked.connect(self.import_dataset)
-        dataset_box.addWidget(import_dataset)
-        self.match_button = QPushButton("Match corrected portrait to FM26 heads")
+        match_box.addWidget(import_dataset)
+        self.match_button = QPushButton("Match portrait to FM26 heads")
         self.match_button.setEnabled(False)
         self.match_button.clicked.connect(self.match_geometry)
-        dataset_box.addWidget(self.match_button)
+        match_box.addWidget(self.match_button)
         self.matches = QListWidget()
+        self.matches.currentRowChanged.connect(self.review_match)
         self.matches.addItem("No comparable records loaded")
-        dataset_box.addWidget(self.matches, 1)
+        match_box.addWidget(self.matches, 1)
+
+        review_box = QVBoxLayout()
+        review_title = QLabel("4. Review and lock donor")
+        review_title.setObjectName("SectionTitle")
+        review_box.addWidget(review_title)
+        previews = QHBoxLayout()
+        self.front_preview = self._preview("Front render")
+        self.side_preview = self._preview("Side render\noptional")
+        previews.addWidget(self.front_preview, 1)
+        previews.addWidget(self.side_preview, 1)
+        review_box.addLayout(previews, 1)
         self.match_details = QTextEdit()
         self.match_details.setReadOnly(True)
-        self.match_details.setPlaceholderText("Component differences appear after matching")
-        dataset_box.addWidget(self.match_details, 1)
-        disabled_export = QPushButton("Texture rebuild/export remains unavailable")
-        disabled_export.setEnabled(False)
-        dataset_box.addWidget(disabled_export)
+        self.match_details.setPlaceholderText("Select a match to inspect its evidence and component differences")
+        review_box.addWidget(self.match_details, 1)
+        self.lock_button = QPushButton("Lock selected donor head")
+        self.lock_button.setEnabled(False)
+        self.lock_button.clicked.connect(self.lock_selected_donor)
+        review_box.addWidget(self.lock_button)
+        self.export_selection = QPushButton("Export locked donor manifest")
+        self.export_selection.setEnabled(False)
+        self.export_selection.clicked.connect(self.export_locked_donor)
+        review_box.addWidget(self.export_selection)
+        self.lock_status = QLabel("No donor locked. Texture reconstruction remains unavailable.")
+        self.lock_status.setWordWrap(True)
+        review_box.addWidget(self.lock_status)
 
         source_widget = QWidget(); source_widget.setLayout(source_box)
         editor_widget = QWidget(); editor_widget.setLayout(editor_box)
-        dataset_widget = QWidget(); dataset_widget.setLayout(dataset_box)
+        match_widget = QWidget(); match_widget.setLayout(match_box)
+        review_widget = QWidget(); review_widget.setLayout(review_box)
         content.addWidget(source_widget, 2)
         content.addWidget(editor_widget, 1)
-        content.addWidget(dataset_widget, 1)
+        content.addWidget(match_widget, 1)
+        content.addWidget(review_widget, 2)
         root.addLayout(content, 1)
-        self.status = QLabel("Ready. Build or import calibrated FM head records, then match a drag-corrected portrait.")
+        self.status = QLabel("Ready. The best score is a recommendation only; you must review and lock the donor explicitly.")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
+
+    @staticmethod
+    def _preview(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumSize(180, 220)
+        label.setWordWrap(True)
+        return label
 
     def choose_library(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose FM26 heads folder")
@@ -147,10 +177,13 @@ class OneClickFaceBuilderPage(QWidget):
             self.analysis = self.service.analyse_photo(self.photo)
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Photo error", str(exc)); self.photo = None; self.analysis = None; return
+        self.current_matches = ()
+        self.locked_donor = None
         self.refresh_analysis()
         self.landmark_name.setCurrentIndex(0)
         self.source_preview.select_landmark(self.landmark_name.currentText())
         self.refresh_match_state()
+        self.clear_review()
         self.status.setText("Initial estimates loaded. Drag every point onto the correct facial feature.")
 
     def refresh_analysis(self) -> None:
@@ -173,8 +206,10 @@ class OneClickFaceBuilderPage(QWidget):
         if self.analysis is None:
             return
         self.analysis = self.service.update_landmark(self.analysis, name, x, y)
-        self.refresh_analysis(); self.select_landmark(name); self.refresh_match_state()
-        self.status.setText(f"Moved {name.replace('_', ' ')}. Measurements recalculated instantly.")
+        self.current_matches = ()
+        self.locked_donor = None
+        self.refresh_analysis(); self.select_landmark(name); self.refresh_match_state(); self.clear_review()
+        self.status.setText(f"Moved {name.replace('_', ' ')}. Previous matches cleared because the geometry changed.")
 
     def select_landmark(self, name: str) -> None:
         self.selected_status.setText(f"Selected point: {name.replace('_', ' ')}")
@@ -205,14 +240,14 @@ class OneClickFaceBuilderPage(QWidget):
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Index failed", str(exc)); return
         self.dataset_status.setText(
-            f"FM asset inventory: {result.head_sets} head sets, {result.textures} textures and {result.cfg2_files} CFG2 files. "
-            f"Loaded calibrated geometry records: {len(self.geometry_records)}."
+            f"FM assets: {result.head_sets} head sets, {result.textures} textures and {result.cfg2_files} CFG2 files. "
+            f"Calibrated records loaded: {len(self.geometry_records)}."
         )
 
     def open_dataset_builder(self) -> None:
         dialog = RenderDatasetBuilderDialog(self)
         dialog.exec()
-        self.status.setText("Render Dataset Builder closed. Import its exported JSON to use the new calibrated records here.")
+        self.status.setText("Dataset Builder closed. Import its exported JSON to review and lock donors.")
 
     def import_dataset(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(self, "Import calibrated FM26 geometry dataset", "", "JSON files (*.json)")
@@ -222,13 +257,12 @@ class OneClickFaceBuilderPage(QWidget):
             self.geometry_records = self.dataset_service.load(Path(selected))
         except ValueError as exc:
             QMessageBox.critical(self, "Dataset rejected", str(exc)); return
+        self.current_matches = ()
+        self.locked_donor = None
         render_count = sum(1 for record in self.geometry_records if record.front_render)
-        decoded_count = sum(1 for record in self.geometry_records if record.source_type == "decoded-mesh")
-        self.dataset_status.setText(
-            f"Loaded {len(self.geometry_records)} comparable FM26 records. Front renders: {render_count}. Decoded meshes: {decoded_count}."
-        )
-        self.matches.clear(); self.matches.addItem("Dataset loaded — drag-correct the portrait and run matching")
-        self.refresh_match_state()
+        self.dataset_status.setText(f"Loaded {len(self.geometry_records)} calibrated records with {render_count} front renders.")
+        self.matches.clear(); self.matches.addItem("Dataset loaded — correct the portrait and run matching")
+        self.clear_review(); self.refresh_match_state()
 
     def refresh_match_state(self) -> None:
         self.match_button.setEnabled(bool(self.geometry_records) and self.analysis is not None and self.analysis.manually_corrected)
@@ -237,17 +271,79 @@ class OneClickFaceBuilderPage(QWidget):
         if self.analysis is None or not self.analysis.manually_corrected:
             QMessageBox.warning(self, "Corrected portrait required", "Load a portrait and drag at least one landmark first."); return
         try:
-            matches = self.dataset_service.match(self.analysis.measurements, self.geometry_records, limit=10)
+            self.current_matches = self.dataset_service.match(self.analysis.measurements, self.geometry_records, limit=10)
         except ValueError as exc:
             QMessageBox.critical(self, "Matching failed", str(exc)); return
+        self.locked_donor = None
         self.matches.clear()
-        for index, match in enumerate(matches, start=1):
+        for index, match in enumerate(self.current_matches, start=1):
             evidence = "mesh" if match.source_type == "decoded-mesh" else "render"
             self.matches.addItem(f"{index}. {match.player_id}   {match.score}%   {evidence}   confidence {match.confidence:.2f}")
-        best = matches[0]
-        details = "\n".join(f"{name.replace('_', ' ').title()}: {difference:.4f}" for name, difference in best.component_differences.items())
+        self.matches.setCurrentRow(0)
+        self.export_selection.setEnabled(False)
+        self.lock_status.setText("Review the candidate renders and explicitly lock one donor.")
+        self.status.setText(f"Matched against {len(self.geometry_records)} calibrated records. Highest score is not automatically accepted.")
+
+    def review_match(self, row: int) -> None:
+        if row < 0 or row >= len(self.current_matches):
+            self.lock_button.setEnabled(False)
+            return
+        match = self.current_matches[row]
+        details = "\n".join(f"{name.replace('_', ' ').title()}: {difference:.4f}" for name, difference in match.component_differences.items())
         self.match_details.setPlainText(
-            f"Best comparable record: {best.player_id}\nTransparent geometry score: {best.score}%\n"
-            f"Evidence: {best.source_type}\nRecord confidence: {best.confidence:.2f}\n\nComponent differences\n{details}"
+            f"Candidate donor: {match.player_id}\nGeometry score: {match.score}%\n"
+            f"Evidence: {match.source_type}\nRecord confidence: {match.confidence:.2f}\n\nComponent differences\n{details}"
         )
-        self.status.setText(f"Matched against {len(self.geometry_records)} calibrated records. Texture reconstruction remains disabled.")
+        self.show_render(self.front_preview, match.front_render, "No front render available")
+        self.show_render(self.side_preview, match.side_render, "No side render available")
+        self.lock_button.setEnabled(match.score > 0)
+
+    @staticmethod
+    def show_render(label: QLabel, render_path: str | None, missing_text: str) -> None:
+        label.setPixmap(QPixmap())
+        if not render_path or not Path(render_path).is_file():
+            label.setText(missing_text)
+            return
+        pixmap = QPixmap(render_path)
+        if pixmap.isNull():
+            label.setText("Render could not be decoded")
+            return
+        label.setText("")
+        label.setPixmap(pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def lock_selected_donor(self) -> None:
+        row = self.matches.currentRow()
+        if self.analysis is None or row < 0 or row >= len(self.current_matches):
+            QMessageBox.warning(self, "Donor required", "Select a reviewed geometry match first."); return
+        try:
+            self.locked_donor = self.selection_service.lock(self.current_matches[row], self.analysis.measurements)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Cannot lock donor", str(exc)); return
+        self.export_selection.setEnabled(True)
+        self.lock_status.setText(
+            f"Locked donor {self.locked_donor.player_id} at {self.locked_donor.score}% geometry similarity. "
+            "This selection is now ready for the landmark-driven texture reconstruction stage."
+        )
+        self.status.setText(f"Donor {self.locked_donor.player_id} locked. Export the manifest before starting texture reconstruction.")
+
+    def export_locked_donor(self) -> None:
+        if self.locked_donor is None:
+            QMessageBox.warning(self, "No locked donor", "Review and lock a donor first."); return
+        selected, _ = QFileDialog.getSaveFileName(
+            self, "Export locked donor manifest", f"facestudio-donor-{self.locked_donor.player_id}.json", "JSON files (*.json)"
+        )
+        if not selected:
+            return
+        try:
+            destination = self.selection_service.save(self.locked_donor, Path(selected))
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", str(exc)); return
+        QMessageBox.information(self, "Donor manifest exported", f"Saved to:\n{destination}")
+
+    def clear_review(self) -> None:
+        self.front_preview.setPixmap(QPixmap()); self.front_preview.setText("Front render")
+        self.side_preview.setPixmap(QPixmap()); self.side_preview.setText("Side render\noptional")
+        self.match_details.clear()
+        self.lock_button.setEnabled(False)
+        self.export_selection.setEnabled(False)
+        self.lock_status.setText("No donor locked. Texture reconstruction remains unavailable.")
