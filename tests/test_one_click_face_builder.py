@@ -18,7 +18,6 @@ def _write_structured_face(path: Path, base: int, wide_jaw: bool = False) -> Non
     image = QImage(1024, 1024, QImage.Format.Format_ARGB32)
     image.fill(base)
     dark = QColor(45, 35, 30)
-    # Stable feature bands provide geometry evidence without external CV dependencies.
     jaw_start = 190 if wide_jaw else 290
     jaw_end = 834 if wide_jaw else 734
     for x in range(260, 764):
@@ -47,7 +46,21 @@ def _asset_set(root: Path, player_id: str, colour: int, complete: bool = True, w
         (root / f"{player_id}_hair.skin").write_bytes(b"HAIR")
 
 
-def test_builder_returns_geometry_and_preserves_template_size(tmp_path: Path) -> None:
+def test_photo_analysis_returns_overlay_and_quality_scores(tmp_path: Path) -> None:
+    photo = tmp_path / "photo.png"
+    _write_structured_face(photo, 0xFF8C604A, wide_jaw=True)
+
+    analysis = OneClickFaceBuilder().analyse_photo(photo)
+
+    assert analysis.annotated_preview.width() == 1024
+    assert analysis.annotated_preview.height() == 1024
+    assert 0 <= analysis.quality_score <= 100
+    assert 0 <= analysis.lighting_score <= 100
+    assert 0 <= analysis.sharpness_score <= 100
+    assert 0 <= analysis.frontal_score <= 100
+
+
+def test_builder_returns_ranked_geometry_matches_and_preserves_template_size(tmp_path: Path) -> None:
     photo = tmp_path / "photo.png"
     _write_structured_face(photo, 0xFF8C604A, wide_jaw=True)
     _asset_set(tmp_path, "100", 0xFF8A5F49, complete=True, wide_jaw=True)
@@ -60,6 +73,9 @@ def test_builder_returns_geometry_and_preserves_template_size(tmp_path: Path) ->
     assert result.texture.width() == 1024
     assert result.texture.height() == 1024
     assert result.source_geometry.jaw_width >= result.donor_geometry.jaw_width - 0.1
+    assert len(result.alternatives) == 2
+    assert result.alternatives[0].player_id == result.player_id
+    assert result.alternatives[0].score >= result.alternatives[1].score
 
 
 def test_builder_prefers_complete_asset_set_when_geometry_is_equal(tmp_path: Path) -> None:
@@ -71,6 +87,7 @@ def test_builder_prefers_complete_asset_set_when_geometry_is_equal(tmp_path: Pat
     result = OneClickFaceBuilder().build(photo, tmp_path)
 
     assert result.player_id == "200"
+    assert result.alternatives[0].complete
 
 
 def test_rebuild_keeps_donor_corner_and_transfers_central_regions(tmp_path: Path) -> None:
