@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import math
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPainterPath
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPainterPath, QPen
 
 from facestudio.match_engine_research.auto_skin_finder import AutoSkinFinder, SkinCandidate
 
@@ -24,6 +24,27 @@ class FaceGeometry:
 
 
 @dataclass(frozen=True)
+class PhotoAnalysis:
+    annotated_preview: QImage
+    geometry: FaceGeometry
+    quality_score: int
+    lighting_score: int
+    sharpness_score: int
+    frontal_score: int
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FaceMatch:
+    player_id: str
+    template_path: str
+    skin_path: str
+    score: int
+    geometry: FaceGeometry
+    complete: bool
+
+
+@dataclass(frozen=True)
 class FaceBuildResult:
     player_id: str
     template_path: str
@@ -34,27 +55,76 @@ class FaceBuildResult:
     notes: tuple[str, ...]
     source_geometry: FaceGeometry
     donor_geometry: FaceGeometry
+    photo_analysis: PhotoAnalysis
+    alternatives: tuple[FaceMatch, ...]
 
 
 class OneClickFaceBuilder:
     """Rebuild one clean face onto the closest available FM26 donor head.
 
-    Alpha 6.3 removes the old single-oval paste. The source and every donor are
-    measured with the same deterministic geometry descriptor, candidates are
-    ranked primarily by proportions, and the source is transferred as separate
-    forehead, eye, nose, cheek, mouth, jaw and chin regions. Donor ears, scalp,
-    neck and side-head pixels are retained. Hair and facial-hair-heavy pixels are
-    rejected from the transfer so those systems can be rebuilt separately later.
+    Alpha 6.3 measures the source and donor textures with one scale-independent
+    descriptor, exposes the top ranked donors, and transfers separate facial
+    regions. Donor ears, scalp, neck and side-head pixels remain intact. Hair and
+    facial-hair-heavy source pixels are rejected until those systems are rebuilt.
     """
 
     def __init__(self) -> None:
         self.finder = AutoSkinFinder()
 
+    def analyse_photo(self, photo_path: Path) -> PhotoAnalysis:
+        image = self._read(photo_path)
+        geometry = self.measure_geometry(image)
+        normal = self._normalised_face(image, 180, 220)
+        grey = normal.convertToFormat(QImage.Format.Format_Grayscale8)
+
+        values: list[int] = []
+        edge_total = edge_count = 0
+        for y in range(1, grey.height() - 1, 2):
+            for x in range(1, grey.width() - 1, 2):
+                value = grey.pixelColor(x, y).value()
+                values.append(value)
+                edge_total += abs(value - grey.pixelColor(x - 1, y).value())
+                edge_total += abs(value - grey.pixelColor(x, y - 1).value())
+                edge_count += 2
+        mean = sum(values) / max(1, len(values))
+        variance = sum((value - mean) ** 2 for value in values) / max(1, len(values))
+        contrast = min(1.0, math.sqrt(variance) / 70.0)
+        sharpness = min(1.0, (edge_total / max(1, edge_count)) / 28.0)
+        exposure = max(0.0, 1.0 - abs(mean - 132.0) / 132.0)
+        frontal = max(0.0, min(1.0, geometry.symmetry))
+
+        sharpness_score = round(sharpness * 100)
+        lighting_score = round((exposure * .65 + contrast * .35) * 100)
+        frontal_score = round(frontal * 100)
+        resolution_score = min(100, round(min(image.width(), image.height()) / 7.2))
+        quality_score = round(
+            resolution_score * .25 + sharpness_score * .30 + lighting_score * .25 + frontal_score * .20
+        )
+        warnings: list[str] = []
+        if min(image.width(), image.height()) < 512:
+            warnings.append("Use a photograph of at least 512 × 512 pixels.")
+        if sharpness_score < 45:
+            warnings.append("The photograph may be soft or blurred.")
+        if lighting_score < 45:
+            warnings.append("Lighting is uneven or the face is under/over exposed.")
+        if frontal_score < 70:
+            warnings.append("Use a straighter front-facing photograph for a stronger geometry match.")
+        return PhotoAnalysis(
+            annotated_preview=self._annotate(image, geometry),
+            geometry=geometry,
+            quality_score=quality_score,
+            lighting_score=lighting_score,
+            sharpness_score=sharpness_score,
+            frontal_score=frontal_score,
+            warnings=tuple(warnings),
+        )
+
     def build(self, photo_path: Path, library_root: Path | None = None) -> FaceBuildResult:
         photo = self._read(photo_path)
-        source_geometry = self.measure_geometry(photo)
+        analysis = self.analyse_photo(photo_path)
+        source_geometry = analysis.geometry
         source_colour = self._skin_colour(photo)
-        library = self.finder.scan(library_root, limit=5000)
+        library = self.finder.scan(library_root, limit=10000)
         usable = [candidate for candidate in library.candidates if candidate.face_png]
         if not usable:
             raise ValueError("No complete FM26 face template was found. Select the folder containing numeric-ID PNG and SKIN files.")
@@ -70,32 +140,44 @@ class OneClickFaceBuilder:
             colour_distance = self._colour_distance(source_colour, self._skin_colour(template)) / 255.0
             completeness_penalty = (100 - candidate.score) / 100.0
             size_penalty = 0.0 if min(template.width(), template.height()) >= 512 else 0.12
-            # Geometry drives selection. Colour is deliberately only a minor tie-breaker.
-            total = geometry_distance * 0.82 + colour_distance * 0.08 + completeness_penalty * 0.08 + size_penalty * 0.02
+            total = geometry_distance * 0.86 + colour_distance * 0.04 + completeness_penalty * 0.08 + size_penalty * 0.02
             ranked.append((total, candidate, template, donor_geometry))
         if not ranked:
             raise ValueError("The located FM26 templates could not be decoded as images.")
 
         ranked.sort(key=lambda item: (item[0], -item[1].score, item[1].player_id))
         distance, chosen, template, donor_geometry = ranked[0]
+        alternatives = tuple(
+            FaceMatch(
+                player_id=candidate.player_id,
+                template_path=candidate.face_png or "",
+                skin_path=candidate.skin_path,
+                score=max(1, min(99, round(100 - candidate_distance * 100))),
+                geometry=geometry,
+                complete=candidate.score >= 90,
+            )
+            for candidate_distance, candidate, _template, geometry in ranked[:10]
+        )
         rebuilt = self.rebuild_texture(photo, template)
-        similarity = max(1, min(99, round(100 - distance * 100)))
+        similarity = alternatives[0].score
         notes = (
-            f"Read {library.skin_count} SKIN files and {len(usable)} usable face templates.",
-            "Selected donor geometry from face, eye, nose, mouth, jaw, chin and symmetry proportions.",
-            "Transferred separate facial regions; donor ears, scalp, neck and side-head areas were preserved.",
-            "Dark hair and facial-hair pixels were excluded from the source transfer.",
+            f"Indexed {len(usable)} usable FM26 head sets.",
+            "Ranked donor geometry using face, eye, nose, mouth, jaw, chin and symmetry proportions.",
+            "Transferred separate facial regions while retaining donor ears, scalp, neck and side-head areas.",
+            "Dark hair and facial-hair-heavy pixels were excluded from the source transfer.",
         )
         return FaceBuildResult(
             player_id=chosen.player_id,
             template_path=chosen.face_png or "",
             skin_path=chosen.skin_path,
             texture=rebuilt,
-            library_count=library.skin_count,
+            library_count=len(usable),
             match_score=similarity,
             notes=notes,
             source_geometry=source_geometry,
             donor_geometry=donor_geometry,
+            photo_analysis=analysis,
+            alternatives=alternatives,
         )
 
     def rebuild_texture(self, photo: QImage, template: QImage) -> QImage:
@@ -104,25 +186,21 @@ class OneClickFaceBuilder:
         painter = QPainter(output)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-
-        # Observed central FM face area. Each feature is transferred separately,
-        # preventing the obvious pasted oval produced by Alpha 6.2.
         regions = (
-            (QRectF(.18, .04, .64, .24), QRectF(.31, .14, .38, .17), 0.78),  # forehead
-            (QRectF(.13, .22, .35, .20), QRectF(.28, .27, .22, .15), 0.94),  # left eye/brow
-            (QRectF(.52, .22, .35, .20), QRectF(.50, .27, .22, .15), 0.94),  # right eye/brow
-            (QRectF(.35, .30, .30, .35), QRectF(.41, .31, .18, .27), 0.96),  # nose
-            (QRectF(.08, .38, .38, .30), QRectF(.27, .40, .25, .22), 0.78),  # left cheek
-            (QRectF(.54, .38, .38, .30), QRectF(.48, .40, .25, .22), 0.78),  # right cheek
-            (QRectF(.27, .61, .46, .18), QRectF(.36, .57, .28, .14), 0.96),  # mouth
-            (QRectF(.14, .68, .72, .22), QRectF(.29, .65, .42, .17), 0.76),  # jaw
-            (QRectF(.34, .78, .32, .20), QRectF(.40, .73, .20, .14), 0.80),  # chin
+            (QRectF(.18, .04, .64, .24), QRectF(.31, .14, .38, .17), 0.78),
+            (QRectF(.13, .22, .35, .20), QRectF(.28, .27, .22, .15), 0.94),
+            (QRectF(.52, .22, .35, .20), QRectF(.50, .27, .22, .15), 0.94),
+            (QRectF(.35, .30, .30, .35), QRectF(.41, .31, .18, .27), 0.96),
+            (QRectF(.08, .38, .38, .30), QRectF(.27, .40, .25, .22), 0.78),
+            (QRectF(.54, .38, .38, .30), QRectF(.48, .40, .25, .22), 0.78),
+            (QRectF(.27, .61, .46, .18), QRectF(.36, .57, .28, .14), 0.96),
+            (QRectF(.14, .68, .72, .22), QRectF(.29, .65, .42, .17), 0.76),
+            (QRectF(.34, .78, .32, .20), QRectF(.40, .73, .20, .14), 0.80),
         )
         for source_region, target_region, opacity in regions:
             source_rect = self._rect(source_region, source.width(), source.height())
             target_rect = self._rect(target_region, output.width(), output.height())
-            patch = source.copy(source_rect.toRect())
-            patch = self._remove_hair_pixels(patch)
+            patch = self._remove_hair_pixels(source.copy(source_rect.toRect()))
             path = QPainterPath()
             path.addRoundedRect(target_rect, target_rect.width() * .22, target_rect.height() * .22)
             painter.save()
@@ -135,12 +213,6 @@ class OneClickFaceBuilder:
 
     @staticmethod
     def measure_geometry(image: QImage) -> FaceGeometry:
-        """Create a scale-independent face descriptor from luminance structure.
-
-        This is deliberately deterministic and dependency-free. It measures the
-        central facial field with horizontal/vertical edge energy and symmetry,
-        giving the donor search real proportional signals rather than skin colour.
-        """
         normal = OneClickFaceBuilder._normalised_face(image, 160, 200)
         grey = normal.convertToFormat(QImage.Format.Format_Grayscale8)
 
@@ -177,25 +249,52 @@ class OneClickFaceBuilder:
         )
 
     @staticmethod
+    def _annotate(image: QImage, geometry: FaceGeometry) -> QImage:
+        preview = image.convertToFormat(QImage.Format.Format_ARGB32)
+        painter = QPainter(preview)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        scale = min(preview.width(), preview.height())
+        centre_x = preview.width() * .5
+        top = preview.height() * .13
+        face_w = scale * geometry.face_width * .58
+        face_h = scale * geometry.face_height * .78
+        face = QRectF(centre_x - face_w / 2, top, face_w, face_h)
+        painter.setPen(QPen(QColor(65, 180, 255, 220), max(2, round(scale / 260))))
+        painter.drawEllipse(face)
+        eye_y = face.top() + face.height() * geometry.eye_line
+        eye_dx = face.width() * geometry.eye_spacing * .55
+        nose_y = eye_y + face.height() * geometry.nose_length
+        mouth_y = face.top() + face.height() * .67
+        chin_y = face.bottom() - face.height() * geometry.chin_length * .45
+        points = (
+            QPointF(centre_x - eye_dx, eye_y), QPointF(centre_x + eye_dx, eye_y),
+            QPointF(centre_x, nose_y),
+            QPointF(centre_x - face.width() * geometry.mouth_width * .35, mouth_y),
+            QPointF(centre_x + face.width() * geometry.mouth_width * .35, mouth_y),
+            QPointF(centre_x, chin_y),
+        )
+        painter.setBrush(QColor(65, 255, 150, 230))
+        radius = max(4, scale / 120)
+        for point in points:
+            painter.drawEllipse(point, radius, radius)
+        painter.drawLine(points[0], points[1])
+        painter.drawLine(points[2], points[5])
+        painter.drawLine(points[3], points[4])
+        painter.end()
+        return preview
+
+    @staticmethod
     def _geometry_distance(first: FaceGeometry, second: FaceGeometry) -> float:
         weights = {
-            "face_width": 1.4,
-            "face_height": 1.2,
-            "eye_line": .7,
-            "eye_spacing": 1.0,
-            "nose_length": 1.0,
-            "mouth_width": .8,
-            "jaw_width": 1.4,
-            "chin_length": 1.1,
-            "symmetry": .5,
+            "face_width": 1.4, "face_height": 1.2, "eye_line": .7,
+            "eye_spacing": 1.0, "nose_length": 1.0, "mouth_width": .8,
+            "jaw_width": 1.4, "chin_length": 1.1, "symmetry": .5,
         }
         total_weight = sum(weights.values())
         return sum(abs(getattr(first, key) - getattr(second, key)) * weight for key, weight in weights.items()) / total_weight
 
     @staticmethod
     def _normalised_face(image: QImage, width: int, height: int) -> QImage:
-        # Crop portrait to a face-centred field while excluding most hair, shoulders
-        # and background. Existing FM textures are handled through the same path.
         x = round(image.width() * .18)
         y = round(image.height() * .10)
         w = max(1, round(image.width() * .64))
@@ -209,8 +308,6 @@ class OneClickFaceBuilder:
         for y in range(result.height()):
             for x in range(result.width()):
                 colour = result.pixelColor(x, y)
-                # Conservative dark-pixel rejection catches most hair, beard and
-                # moustache contamination without erasing ordinary mid-tone skin.
                 if colour.value() < 54 and colour.saturation() < 190:
                     colour.setAlpha(0)
                     result.setPixelColor(x, y, colour)
