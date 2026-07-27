@@ -8,20 +8,9 @@ from pathlib import Path
 WORKSPACE_FORMAT = "facestudio-builder-workspace-v1"
 
 STAGES = (
-    "home",
-    "project",
-    "source_photo",
-    "landmarks",
-    "geometry",
-    "donor_search",
-    "donor_review",
-    "uv_calibration",
-    "reconstruction",
-    "refinement",
-    "validation",
-    "preview",
-    "export",
-    "settings",
+    "home", "project", "source_photo", "landmarks", "geometry",
+    "donor_search", "donor_review", "uv_calibration", "reconstruction",
+    "refinement", "validation", "preview", "export", "settings",
 )
 
 
@@ -31,8 +20,8 @@ class StageState:
     detail: str = ""
 
     def normalised(self) -> "StageState":
-        status = self.status if self.status in {"not-started", "needs-review", "running", "complete", "blocked"} else "not-started"
-        return StageState(status, str(self.detail))
+        allowed = {"not-started", "needs-review", "running", "complete", "blocked"}
+        return StageState(self.status if self.status in allowed else "not-started", str(self.detail))
 
 
 @dataclass
@@ -62,6 +51,7 @@ class BuilderWorkspace:
         self.refresh()
 
     def refresh(self) -> None:
+        integrated = self._exists(self.integrated_manifest)
         self._set("home", "complete", "Workspace ready")
         self._set("project", "complete" if self.workspace_directory else "needs-review", self.project_name)
         self._path_stage("source_photo", self.source_photo, "Choose a clear front-facing photograph")
@@ -73,16 +63,18 @@ class BuilderWorkspace:
         self._path_stage("uv_calibration", self.uv_record, "Review all donor UV anchors")
         self._path_stage("reconstruction", self.reconstruction_manifest, "Run triangulated reconstruction")
         self._path_stage("refinement", self.refinement_manifest, "Run texture refinement")
-        self._path_stage("validation", self.validation_report, "Run texture validation")
-        self._set("preview", "complete" if self.refinement_manifest else "blocked", "Build comparison available" if self.refinement_manifest else "Requires refined texture")
-        self._set("export", "complete" if self.integrated_manifest else "blocked", "Package exported" if self.integrated_manifest else "Requires a completed build")
+        validation_ready = integrated or self._exists(self.validation_report)
+        self._set("validation", "complete" if validation_ready else "needs-review", self.validation_report or ("Recorded in integrated build" if integrated else "Run texture validation"))
+        preview_ready = integrated or self._exists(self.refinement_manifest)
+        self._set("preview", "complete" if preview_ready else "blocked", "Build comparison available" if preview_ready else "Requires refined texture")
+        self._set("export", "complete" if integrated else "blocked", self.export_directory or ("Package exported" if integrated else "Requires a completed build"))
         self._set("settings", "complete", "Application settings available")
         self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def mark_running_from(self, stage: str) -> None:
         start = STAGES.index(stage)
         for name in STAGES[start:]:
-            if name in {"settings"}:
+            if name == "settings":
                 continue
             self._set(name, "running" if name == stage else "not-started", "Build pipeline running" if name == stage else "Awaiting previous stage")
         self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -101,8 +93,7 @@ class BuilderWorkspace:
 
     def save(self, path: Path) -> Path:
         self.refresh()
-        payload = asdict(self)
-        payload["format"] = WORKSPACE_FORMAT
+        payload = asdict(self); payload["format"] = WORKSPACE_FORMAT
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path
@@ -120,12 +111,15 @@ class BuilderWorkspace:
     @property
     def progress(self) -> int:
         counted = [name for name in STAGES if name not in {"home", "settings"}]
-        complete = sum(self.stages[name].status == "complete" for name in counted)
-        return round(complete / len(counted) * 100)
+        return round(sum(self.stages[name].status == "complete" for name in counted) / len(counted) * 100)
 
     def _path_stage(self, name: str, value: str, empty_detail: str) -> None:
-        valid = bool(value and Path(value).expanduser().exists())
+        valid = self._exists(value)
         self._set(name, "complete" if valid else "needs-review", value if valid else empty_detail)
+
+    @staticmethod
+    def _exists(value: str) -> bool:
+        return bool(value and Path(value).expanduser().exists())
 
     def _set(self, name: str, status: str, detail: str) -> None:
         self.stages[name] = StageState(status, detail)
