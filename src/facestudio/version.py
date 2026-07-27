@@ -1,6 +1,6 @@
 from __future__ import annotations
 
 APP_NAME = "FM FaceStudio"
-APP_VERSION = "Alpha 7.2.0 — FM Texture Validation Studio"
-PACKAGE_VERSION = "7.2.0-alpha"
-APP_TAGLINE = "Validate refined donor textures, inspect regional changes and create reversible manual FM test packages"
+APP_VERSION = "Alpha 8.0.0 — Integrated Face Builder"
+PACKAGE_VERSION = "8.0.0-alpha"
+APP_TAGLINE = "Run the reviewed donor texture pipeline from corrected landmarks to a validated reversible test package in one window"
