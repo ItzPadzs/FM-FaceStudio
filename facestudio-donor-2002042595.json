@@ -2,31 +2,31 @@
   "format": "facestudio-donor-selection-v1",
   "selected_donor": {
     "player_id": "2002042595",
-    "score": 96,
+    "score": 97,
     "source_type": "calibrated-render",
     "confidence": 0.9,
     "front_render": "C:\\Users\\paddy\\Downloads\\2002042595.png",
     "side_render": null,
     "component_differences": {
-      "face_width": 0.003957846926838315,
-      "face_height": 0.02357569748172872,
-      "eye_spacing": 0.001140569023946325,
-      "nose_length": 0.004245529468855591,
-      "mouth_width": 0.015126011216482521,
-      "jaw_width": 0.006387532264525042,
-      "chin_length": 0.013504796616300607,
-      "symmetry": 0.002583508305259108
+      "face_width": 0.009627860730569204,
+      "face_height": 0.013952873703219182,
+      "eye_spacing": 0.008876918661931188,
+      "nose_length": 0.012404714255887517,
+      "mouth_width": 0.0010574257068580728,
+      "jaw_width": 0.0016482737159355665,
+      "chin_length": 0.0011373280375492345,
+      "symmetry": 0.01672979158649479
     }
   },
   "portrait_measurements": {
-    "face_width": 0.49708798808661675,
-    "face_height": 0.8018124373681745,
-    "eye_spacing": 0.2692699051494605,
-    "nose_length": 0.20039292730844788,
-    "mouth_width": 0.22214297504215239,
-    "jaw_width": 0.5108659477609434,
-    "chin_length": 0.3660608740774197,
-    "symmetry": 0.9292730844793713
+    "face_width": 0.4852652259332023,
+    "face_height": 0.8194442259224952,
+    "eye_spacing": 0.2771878676425402,
+    "nose_length": 0.20828853879290488,
+    "mouth_width": 0.22989605651971573,
+    "jaw_width": 0.5206879900980371,
+    "chin_length": 0.3721936392658866,
+    "symmetry": 0.9214145383104125
   },
   "next_stage": "landmark-driven-texture-reconstruction"
 }
