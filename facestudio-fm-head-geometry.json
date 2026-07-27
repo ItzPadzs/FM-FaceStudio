@@ -9,14 +9,14 @@
       "side_render": null,
       "notes": "Created in FaceStudio Render Dataset Builder from a manually reviewed standard front render.",
       "measurements": {
-        "face_width": 0.4983558423461572,
-        "face_height": 0.8098053164989788,
-        "eye_spacing": 0.27663763841943334,
-        "nose_length": 0.18216300042197345,
-        "mouth_width": 0.23885633633089076,
-        "jaw_width": 0.5137571974027364,
-        "chin_length": 0.37614348593748437,
-        "symmetry": 0.9335624284077892
+        "face_width": 0.49313912123112424,
+        "face_height": 0.8525730950307473,
+        "eye_spacing": 0.27354146159665177,
+        "nose_length": 0.2132315558579435,
+        "mouth_width": 0.23741825116645776,
+        "jaw_width": 0.5120736158565022,
+        "chin_length": 0.3925994644191674,
+        "symmetry": 0.9175257731958764
       }
     }
   ]
