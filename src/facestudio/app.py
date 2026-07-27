@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from PySide6.QtWidgets import QApplication
 
-from facestudio.ui.match_engine_research_window import MatchEngineResearchMainWindow
+from facestudio.ui.integrated_face_builder_window import IntegratedFaceBuilderWindow
 from facestudio.utils.config import AppConfig
 from facestudio.utils.logging_setup import configure_logging
 from facestudio.utils.paths import app_data_dir
@@ -23,6 +23,6 @@ def main() -> int:
 
     config_path = data_dir / "facestudio-settings.json"
     config = AppConfig.load(config_path)
-    window = MatchEngineResearchMainWindow(config, config_path)
+    window = IntegratedFaceBuilderWindow(config, config_path)
     window.show()
     return app.exec()
