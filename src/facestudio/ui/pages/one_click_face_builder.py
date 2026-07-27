@@ -3,12 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import (
     QComboBox,
-    QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -20,15 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from facestudio.match_engine_research.geometry_dataset import (
-    GeometryDatasetService,
-    HeadGeometryRecord,
-)
-from facestudio.match_engine_research.one_click_face_builder import (
-    LANDMARK_ORDER,
-    OneClickFaceBuilder,
-    PhotoAnalysis,
-)
+from facestudio.match_engine_research.geometry_dataset import GeometryDatasetService, HeadGeometryRecord
+from facestudio.match_engine_research.one_click_face_builder import LANDMARK_ORDER, OneClickFaceBuilder, PhotoAnalysis
+from facestudio.ui.widgets.landmark_editor import LandmarkEditor
 
 
 class OneClickFaceBuilderPage(QWidget):
@@ -39,15 +31,16 @@ class OneClickFaceBuilderPage(QWidget):
         self.photo: Path | None = None
         self.analysis: PhotoAnalysis | None = None
         self.geometry_records: tuple[HeadGeometryRecord, ...] = ()
+        self._syncing_selection = False
 
         root = QVBoxLayout(self)
-        title = QLabel("FM26 Calibrated Geometry Matcher")
+        title = QLabel("FM26 Drag Landmark & Geometry Matcher")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
         summary = QLabel(
-            "Load and correct one portrait, then import a calibrated FM26 head-geometry dataset created from standard front renders or decoded meshes. "
-            "FaceStudio can now rank real comparable records, while texture rebuilding remains disabled until the geometry dataset is proven in game."
+            "Load one portrait and drag the landmark points directly onto the face. Measurements update instantly. "
+            "A calibrated FM26 geometry dataset can then rank comparable donor-head records."
         )
         summary.setWordWrap(True)
         root.addWidget(summary)
@@ -67,44 +60,37 @@ class OneClickFaceBuilderPage(QWidget):
         content = QHBoxLayout()
 
         source_box = QVBoxLayout()
-        source_title = QLabel("1. Correct portrait landmarks")
+        source_title = QLabel("1. Drag portrait landmarks")
         source_title.setObjectName("SectionTitle")
         source_box.addWidget(source_title)
-        self.source_preview = self._preview("Choose one clear front-facing photograph")
+        self.source_preview = LandmarkEditor()
+        self.source_preview.landmark_moved.connect(self.drag_landmark)
+        self.source_preview.landmark_selected.connect(self.select_landmark)
         source_box.addWidget(self.source_preview, 1)
         choose_photo = QPushButton("Choose photograph")
         choose_photo.clicked.connect(self.choose_photo)
         source_box.addWidget(choose_photo)
-        self.photo_status = QLabel("No photograph loaded.")
+        self.photo_status = QLabel("No photograph loaded. Dragging becomes available after selecting a portrait.")
         self.photo_status.setWordWrap(True)
         source_box.addWidget(self.photo_status)
 
         editor_box = QVBoxLayout()
-        editor_title = QLabel("2. Review measurements")
+        editor_title = QLabel("2. Live measurements")
         editor_title.setObjectName("SectionTitle")
         editor_box.addWidget(editor_title)
         explanation = QLabel(
-            "Select every point and correct its normalised X/Y position. Matching is enabled only after at least one manual correction and a calibrated dataset is loaded."
+            "Click a green point and drag it onto the correct facial feature. The selected point turns amber. "
+            "The list below can also jump directly to a landmark."
         )
         explanation.setWordWrap(True)
         editor_box.addWidget(explanation)
-        form = QFormLayout()
         self.landmark_name = QComboBox()
         self.landmark_name.addItems(LANDMARK_ORDER)
-        self.landmark_name.currentTextChanged.connect(self.load_selected_landmark)
-        self.x_value = QDoubleSpinBox()
-        self.y_value = QDoubleSpinBox()
-        for control in (self.x_value, self.y_value):
-            control.setRange(0.0, 1.0)
-            control.setDecimals(3)
-            control.setSingleStep(0.005)
-        form.addRow("Landmark", self.landmark_name)
-        form.addRow("X", self.x_value)
-        form.addRow("Y", self.y_value)
-        editor_box.addLayout(form)
-        apply_point = QPushButton("Apply corrected point")
-        apply_point.clicked.connect(self.apply_landmark)
-        editor_box.addWidget(apply_point)
+        self.landmark_name.currentTextChanged.connect(self.select_landmark_from_list)
+        editor_box.addWidget(self.landmark_name)
+        self.selected_status = QLabel("Selected point: none")
+        self.selected_status.setWordWrap(True)
+        editor_box.addWidget(self.selected_status)
         self.measurements = QTextEdit()
         self.measurements.setReadOnly(True)
         self.measurements.setPlaceholderText("Measurements appear after loading a photograph")
@@ -148,17 +134,9 @@ class OneClickFaceBuilderPage(QWidget):
         content.addWidget(dataset_widget, 1)
         root.addLayout(content, 1)
 
-        self.status = QLabel("Ready. This build performs evidence-backed matching only when calibrated FM geometry records are supplied.")
+        self.status = QLabel("Ready. Load a portrait, then drag at least one landmark to enable calibrated matching.")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
-
-    @staticmethod
-    def _preview(text: str) -> QLabel:
-        label = QLabel(text)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setMinimumSize(440, 440)
-        label.setWordWrap(True)
-        return label
 
     def choose_library(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose FM26 heads folder")
@@ -181,18 +159,18 @@ class OneClickFaceBuilderPage(QWidget):
             return
         self.refresh_analysis()
         self.landmark_name.setCurrentIndex(0)
-        self.load_selected_landmark(self.landmark_name.currentText())
+        self.source_preview.select_landmark(self.landmark_name.currentText())
         self.refresh_match_state()
-        self.status.setText("Initial landmark estimates loaded. Review and correct the points before matching.")
+        self.status.setText("Initial estimates loaded. Click and drag every point onto the correct facial feature.")
 
     def refresh_analysis(self) -> None:
-        if self.analysis is None:
+        if self.analysis is None or self.photo is None:
             return
-        pixmap = QPixmap.fromImage(self.analysis.annotated_preview)
-        self.source_preview.setPixmap(
-            pixmap.scaled(self.source_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        )
-        correction = "manually corrected" if self.analysis.manually_corrected else "initial estimates only"
+        reader = QImageReader(str(self.photo))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        self.source_preview.set_content(image, self.analysis.landmarks)
+        correction = "drag-corrected" if self.analysis.manually_corrected else "initial estimates only"
         self.photo_status.setText(
             f"Quality {self.analysis.quality_score}% · {correction}\n" + " ".join(self.analysis.warnings)
         )
@@ -209,28 +187,27 @@ class OneClickFaceBuilderPage(QWidget):
             f"Symmetry: {values.symmetry:.3f}"
         )
 
-    def load_selected_landmark(self, name: str) -> None:
+    def drag_landmark(self, name: str, x: float, y: float) -> None:
         if self.analysis is None:
             return
-        point = next((item for item in self.analysis.landmarks if item.name == name), None)
-        if point is None:
-            return
-        self.x_value.setValue(point.x)
-        self.y_value.setValue(point.y)
-
-    def apply_landmark(self) -> None:
-        if self.analysis is None:
-            QMessageBox.warning(self, "Photo required", "Choose a photograph first.")
-            return
-        self.analysis = self.service.update_landmark(
-            self.analysis,
-            self.landmark_name.currentText(),
-            self.x_value.value(),
-            self.y_value.value(),
-        )
+        self.analysis = self.service.update_landmark(self.analysis, name, x, y)
         self.refresh_analysis()
+        self.select_landmark(name)
         self.refresh_match_state()
-        self.status.setText(f"Updated {self.landmark_name.currentText()}. Measurements recalculated.")
+        self.status.setText(f"Moved {name.replace('_', ' ')}. Measurements recalculated instantly.")
+
+    def select_landmark(self, name: str) -> None:
+        self.selected_status.setText(f"Selected point: {name.replace('_', ' ')}")
+        if self.landmark_name.currentText() != name:
+            self._syncing_selection = True
+            self.landmark_name.setCurrentText(name)
+            self._syncing_selection = False
+
+    def select_landmark_from_list(self, name: str) -> None:
+        if self._syncing_selection:
+            return
+        self.source_preview.select_landmark(name)
+        self.selected_status.setText(f"Selected point: {name.replace('_', ' ')}")
 
     def save_record(self) -> None:
         if self.analysis is None:
@@ -263,9 +240,7 @@ class OneClickFaceBuilderPage(QWidget):
         self.status.setText("FM26 asset inventory complete. Geometry records must still be imported separately.")
 
     def import_dataset(self) -> None:
-        selected, _ = QFileDialog.getOpenFileName(
-            self, "Import calibrated FM26 geometry dataset", "", "JSON files (*.json)"
-        )
+        selected, _ = QFileDialog.getOpenFileName(self, "Import calibrated FM26 geometry dataset", "", "JSON files (*.json)")
         if not selected:
             return
         try:
@@ -280,7 +255,7 @@ class OneClickFaceBuilderPage(QWidget):
             f"Front renders: {render_count}. Decoded-mesh records: {decoded_count}."
         )
         self.matches.clear()
-        self.matches.addItem("Dataset loaded — correct the portrait and run matching")
+        self.matches.addItem("Dataset loaded — drag-correct the portrait and run matching")
         self.refresh_match_state()
         self.status.setText("Calibrated geometry dataset loaded and validated.")
 
@@ -290,7 +265,7 @@ class OneClickFaceBuilderPage(QWidget):
 
     def match_geometry(self) -> None:
         if self.analysis is None or not self.analysis.manually_corrected:
-            QMessageBox.warning(self, "Corrected portrait required", "Load a portrait and manually correct its landmarks first.")
+            QMessageBox.warning(self, "Corrected portrait required", "Load a portrait and drag at least one landmark first.")
             return
         try:
             matches = self.dataset_service.match(self.analysis.measurements, self.geometry_records, limit=10)
