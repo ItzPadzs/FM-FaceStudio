@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
-from PySide6.QtGui import QImage, QColor
+from PySide6.QtGui import QImage
 
-from facestudio.match_engine_research.one_click_face_builder import OneClickFaceBuilder
+from facestudio.match_engine_research.one_click_face_builder import LANDMARK_ORDER, OneClickFaceBuilder
 
 
 def _write_png(path: Path, colour: int, width: int = 1024, height: int = 1024) -> None:
@@ -14,103 +15,93 @@ def _write_png(path: Path, colour: int, width: int = 1024, height: int = 1024) -
     assert image.save(str(path), "PNG")
 
 
-def _write_structured_face(path: Path, base: int, wide_jaw: bool = False) -> None:
-    image = QImage(1024, 1024, QImage.Format.Format_ARGB32)
-    image.fill(base)
-    dark = QColor(45, 35, 30)
-    jaw_start = 190 if wide_jaw else 290
-    jaw_end = 834 if wide_jaw else 734
-    for x in range(260, 764):
-        for y in range(305, 326):
-            image.setPixelColor(x, y, dark)
-    for x in range(430, 594):
-        for y in range(420, 620):
-            image.setPixelColor(x, y, dark)
-    for x in range(345, 679):
-        for y in range(660, 690):
-            image.setPixelColor(x, y, dark)
-    for x in range(jaw_start, jaw_end):
-        for y in range(760, 795):
-            image.setPixelColor(x, y, dark)
-    assert image.save(str(path), "PNG")
-
-
-def _asset_set(root: Path, player_id: str, colour: int, complete: bool = True, wide_jaw: bool | None = None) -> None:
+def _asset_set(root: Path, player_id: str) -> None:
     (root / f"{player_id}.skin").write_bytes(b"SKIN")
-    if wide_jaw is None:
-        _write_png(root / f"{player_id}.png", colour)
-    else:
-        _write_structured_face(root / f"{player_id}.png", colour, wide_jaw)
-    if complete:
-        (root / f"{player_id}.cfg2").write_text("eye_l=0,0,0\n", encoding="utf-8")
-        (root / f"{player_id}_hair.skin").write_bytes(b"HAIR")
+    _write_png(root / f"{player_id}.png", 0xFF8C604A)
+    (root / f"{player_id}.cfg2").write_text("eye_l=0,0,0\n", encoding="utf-8")
 
 
-def test_photo_analysis_returns_overlay_and_quality_scores(tmp_path: Path) -> None:
+def test_photo_analysis_returns_named_estimated_landmarks(tmp_path: Path) -> None:
     photo = tmp_path / "photo.png"
-    _write_structured_face(photo, 0xFF8C604A, wide_jaw=True)
+    _write_png(photo, 0xFF8C604A)
 
     analysis = OneClickFaceBuilder().analyse_photo(photo)
 
-    assert analysis.annotated_preview.width() == 1024
-    assert analysis.annotated_preview.height() == 1024
-    assert 0 <= analysis.quality_score <= 100
-    assert 0 <= analysis.lighting_score <= 100
-    assert 0 <= analysis.sharpness_score <= 100
-    assert 0 <= analysis.frontal_score <= 100
+    assert analysis.annotated_preview.size() == QImage(str(photo)).size()
+    assert tuple(point.name for point in analysis.landmarks) == LANDMARK_ORDER
+    assert all(0.0 <= point.x <= 1.0 and 0.0 <= point.y <= 1.0 for point in analysis.landmarks)
+    assert all(point.confidence < 0.5 for point in analysis.landmarks)
+    assert not analysis.manually_corrected
+    assert any("estimates" in warning for warning in analysis.warnings)
 
 
-def test_builder_returns_ranked_geometry_matches_and_preserves_template_size(tmp_path: Path) -> None:
-    photo = tmp_path / "photo.png"
-    _write_structured_face(photo, 0xFF8C604A, wide_jaw=True)
-    _asset_set(tmp_path, "100", 0xFF8A5F49, complete=True, wide_jaw=True)
-    _asset_set(tmp_path, "200", 0xFFD7B59A, complete=True, wide_jaw=False)
-
-    result = OneClickFaceBuilder().build(photo, tmp_path)
-
-    assert result.player_id == "100"
-    assert result.library_count >= 2
-    assert result.texture.width() == 1024
-    assert result.texture.height() == 1024
-    assert result.source_geometry.jaw_width >= result.donor_geometry.jaw_width - 0.1
-    assert len(result.alternatives) == 2
-    assert result.alternatives[0].player_id == result.player_id
-    assert result.alternatives[0].score >= result.alternatives[1].score
-
-
-def test_builder_prefers_complete_asset_set_when_geometry_is_equal(tmp_path: Path) -> None:
-    photo = tmp_path / "photo.png"
-    _write_png(photo, 0xFF9A7058)
-    _asset_set(tmp_path, "100", 0xFF997058, complete=False)
-    _asset_set(tmp_path, "200", 0xFF9E745C, complete=True)
-
-    result = OneClickFaceBuilder().build(photo, tmp_path)
-
-    assert result.player_id == "200"
-    assert result.alternatives[0].complete
-
-
-def test_rebuild_keeps_donor_corner_and_transfers_central_regions(tmp_path: Path) -> None:
-    photo_path = tmp_path / "photo.png"
-    donor_path = tmp_path / "donor.png"
-    _write_png(photo_path, 0xFFC08060)
-    _write_png(donor_path, 0xFF305070)
-    builder = OneClickFaceBuilder()
-    rebuilt = builder.rebuild_texture(builder._read(photo_path), builder._read(donor_path))
-
-    assert rebuilt.pixelColor(10, 10) == QColor(0x30, 0x50, 0x70)
-    assert rebuilt.pixelColor(512, 512) != QColor(0x30, 0x50, 0x70)
-
-
-def test_builder_rejects_library_without_face_templates(tmp_path: Path) -> None:
+def test_manual_landmark_correction_recalculates_measurements(tmp_path: Path) -> None:
     photo = tmp_path / "photo.png"
     _write_png(photo, 0xFF8C604A)
-    (tmp_path / "100.skin").write_bytes(b"SKIN")
+    service = OneClickFaceBuilder()
+    analysis = service.analyse_photo(photo)
+    original_width = analysis.measurements.face_width
 
-    with pytest.raises(ValueError, match="No complete FM26 face template"):
-        OneClickFaceBuilder().build(photo, tmp_path)
+    corrected = service.update_landmark(analysis, "left_temple", 0.20, 0.30)
+
+    point = next(item for item in corrected.landmarks if item.name == "left_temple")
+    assert point.x == pytest.approx(0.20)
+    assert point.confidence == 1.0
+    assert corrected.manually_corrected
+    assert corrected.measurements.face_width > original_width
 
 
-def test_builder_rejects_missing_photo(tmp_path: Path) -> None:
+def test_landmark_coordinates_are_clamped(tmp_path: Path) -> None:
+    photo = tmp_path / "photo.png"
+    _write_png(photo, 0xFF8C604A)
+    service = OneClickFaceBuilder()
+    analysis = service.analyse_photo(photo)
+
+    corrected = service.update_landmark(analysis, "chin", 2.0, -1.0)
+    point = next(item for item in corrected.landmarks if item.name == "chin")
+
+    assert point.x == 1.0
+    assert point.y == 0.0
+
+
+def test_unknown_landmark_is_rejected(tmp_path: Path) -> None:
+    photo = tmp_path / "photo.png"
+    _write_png(photo, 0xFF8C604A)
+    service = OneClickFaceBuilder()
+    analysis = service.analyse_photo(photo)
+
+    with pytest.raises(ValueError, match="Unknown landmark"):
+        service.update_landmark(analysis, "left_ear_tip", 0.1, 0.2)
+
+
+def test_analysis_json_is_transparent_and_versioned(tmp_path: Path) -> None:
+    photo = tmp_path / "photo.png"
+    _write_png(photo, 0xFF8C604A)
+    service = OneClickFaceBuilder()
+    analysis = service.update_landmark(service.analyse_photo(photo), "nose_tip", 0.51, 0.58)
+
+    destination = service.save_analysis(analysis, tmp_path / "record")
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert payload["format"] == "facestudio-landmarks-v1"
+    assert payload["manually_corrected"] is True
+    assert len(payload["landmarks"]) == len(LANDMARK_ORDER)
+    assert "measurements" in payload
+
+
+def test_library_index_reports_zero_comparable_geometry_records(tmp_path: Path) -> None:
+    _asset_set(tmp_path, "100")
+    _asset_set(tmp_path, "200")
+
+    result = OneClickFaceBuilder().index_library(tmp_path)
+
+    assert result.head_sets == 2
+    assert result.textures == 2
+    assert result.cfg2_files == 2
+    assert result.geometry_records == 0
+    assert any("Donor ranking remains disabled" in warning for warning in result.warnings)
+
+
+def test_missing_photo_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Image not found"):
-        OneClickFaceBuilder().build(tmp_path / "missing.png", tmp_path)
+        OneClickFaceBuilder().analyse_photo(tmp_path / "missing.png")
