@@ -4,17 +4,10 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageOps
-except ModuleNotFoundError as exc:
-    if exc.name != "PIL":
-        raise
-    Image = ImageDraw = ImageFilter = ImageOps = None  # type: ignore[assignment]
-    _PIL_IMPORT_ERROR: ModuleNotFoundError | None = exc
-else:
-    _PIL_IMPORT_ERROR = None
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPainterPath
 
-UV_TEXTURE_FORMAT = "facestudio-head-texture-v1"
+UV_TEXTURE_FORMAT = "facestudio-head-texture-v2"
 
 
 @dataclass(frozen=True)
@@ -25,18 +18,21 @@ class TextureBuildResult:
 
 
 class HeadTextureGenerator:
-    """Generate a square UV-style head texture from one frontal portrait."""
+    """Create a square FM/BepInEx-style head texture using PySide6 only.
+
+    The generator deliberately uses the same Qt installation as the interface, so a
+    separate Pillow installation is no longer required. A working FM head texture can
+    be supplied as the base; the portrait is then projected into its central face area
+    while the template preserves the scalp, ears, neck and outer UV coverage.
+    """
 
     @staticmethod
     def available() -> bool:
-        return _PIL_IMPORT_ERROR is None
+        return True
 
     @staticmethod
     def dependency_message() -> str:
-        return (
-            "The Pillow image library is not installed. Reinstall/update FM FaceStudio "
-            "or run: python -m pip install Pillow"
-        )
+        return "The built-in Qt texture generator is available."
 
     def build(
         self,
@@ -49,9 +45,6 @@ class HeadTextureGenerator:
         face_y: float = 0.0,
         smoothing: float = 0.35,
     ) -> TextureBuildResult:
-        if _PIL_IMPORT_ERROR is not None:
-            raise RuntimeError(self.dependency_message()) from _PIL_IMPORT_ERROR
-
         photo = Path(photo).expanduser().resolve()
         output_directory = Path(output_directory).expanduser().resolve()
         if not photo.is_file():
@@ -59,41 +52,48 @@ class HeadTextureGenerator:
         if size not in (512, 1024, 2048):
             raise ValueError("Texture size must be 512, 1024 or 2048")
 
-        output_directory.mkdir(parents=True, exist_ok=True)
-        with Image.open(photo) as opened:
-            source = ImageOps.exif_transpose(opened).convert("RGB")
-
+        source = self._read_image(photo)
         source = self._square_face_crop(source, face_scale, face_y)
-        source = source.resize((size, size), Image.Resampling.LANCZOS)
+        source = source.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
 
+        template_path: Path | None = None
         if template is not None:
             template_path = Path(template).expanduser().resolve()
             if not template_path.is_file():
                 raise ValueError(f"Template not found: {template_path}")
-            with Image.open(template_path) as opened:
-                canvas = opened.convert("RGB").resize((size, size), Image.Resampling.LANCZOS)
+            canvas = self._read_image(template_path).scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         else:
             canvas = self._neutral_canvas(source, size)
 
-        face = self._warp_central_face(source, size)
-        mask = self._face_mask(size).filter(
-            ImageFilter.GaussianBlur(max(2, int(size * 0.018)))
-        )
-        canvas.paste(face, (0, 0), mask)
-        canvas = self._extend_sides(canvas, size)
-        canvas = self._extend_neck(canvas, size)
-        canvas = self._soften_seams(canvas, smoothing)
+        canvas = self._compose_face(canvas, source, size)
+        if template_path is None:
+            canvas = self._extend_sides(canvas, size)
+            canvas = self._extend_neck(canvas, size)
+        canvas = self._soften(canvas, smoothing)
 
+        output_directory.mkdir(parents=True, exist_ok=True)
         texture = output_directory / f"{photo.stem}-head-texture.png"
-        canvas.save(texture, "PNG")
+        if not canvas.save(str(texture), "PNG"):
+            raise OSError(f"Could not save generated texture: {texture}")
 
         manifest = output_directory / f"{photo.stem}-head-texture.json"
         manifest.write_text(
             json.dumps(
                 {
                     "format": UV_TEXTURE_FORMAT,
+                    "generator": "qt-native",
                     "source_photo": str(photo),
-                    "template": str(template) if template else None,
+                    "template": str(template_path) if template_path else None,
                     "texture": str(texture),
                     "size": size,
                     "face_scale": face_scale,
@@ -107,11 +107,11 @@ class HeadTextureGenerator:
                         "nose": [0.50, 0.51],
                         "mouth": [0.50, 0.62],
                         "chin": [0.50, 0.75],
-                        "hair_split": [0.50, 0.02],
                         "neck_start": 0.73,
                     },
-                    "boundary": (
-                        "Produces a 2D UV-style texture only; it does not create or alter mesh geometry."
+                    "note": (
+                        "Using a known working head texture as the base gives the most "
+                        "reliable scalp, ear, neck and UV-boundary placement."
                     ),
                 },
                 indent=2,
@@ -121,77 +121,109 @@ class HeadTextureGenerator:
         return TextureBuildResult(texture=texture, manifest=manifest, size=size)
 
     @staticmethod
-    def _square_face_crop(image: Image.Image, scale: float, y_offset: float) -> Image.Image:
-        width, height = image.size
-        side = max(1, int(min(width, height) / max(0.65, min(1.6, scale))))
-        side = min(side, width, height)
-        cx = width // 2
-        cy = int(height * (0.50 + max(-0.25, min(0.25, y_offset))))
-        left = max(0, min(width - side, cx - side // 2))
-        top = max(0, min(height - side, cy - side // 2))
-        return image.crop((left, top, left + side, top + side))
+    def _read_image(path: Path) -> QImage:
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
+            detail = reader.errorString() or "unsupported or damaged image"
+            raise ValueError(f"Could not open image {path}: {detail}")
+        return image.convertToFormat(QImage.Format.Format_ARGB32)
 
     @staticmethod
-    def _neutral_canvas(source: Image.Image, size: int) -> Image.Image:
-        sample = source.crop(
-            (int(size * 0.36), int(size * 0.58), int(size * 0.64), int(size * 0.82))
-        )
-        colour = sample.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
-        return Image.new("RGB", (size, size), colour)
+    def _square_face_crop(image: QImage, scale: float, y_offset: float) -> QImage:
+        width, height = image.width(), image.height()
+        scale = max(0.65, min(1.60, float(scale)))
+        side = max(1, min(width, height, int(min(width, height) / scale)))
+        centre_x = width // 2
+        centre_y = int(height * (0.50 + max(-0.25, min(0.25, float(y_offset)))))
+        left = max(0, min(width - side, centre_x - side // 2))
+        top = max(0, min(height - side, centre_y - side // 2))
+        return image.copy(QRect(left, top, side, side))
 
     @staticmethod
-    def _warp_central_face(source: Image.Image, size: int) -> Image.Image:
-        resized = source.resize(
-            (int(size * 0.70), int(size * 0.82)), Image.Resampling.LANCZOS
+    def _neutral_canvas(source: QImage, size: int) -> QImage:
+        sample = source.scaled(
+            1,
+            1,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
-        fill = resized.getpixel((resized.width // 2, resized.height - 1))
-        out = Image.new("RGB", (size, size), fill)
-        out.paste(resized, (int(size * 0.15), int(size * 0.10)))
+        colour = QColor(sample.pixel(0, 0))
+        canvas = QImage(size, size, QImage.Format.Format_ARGB32)
+        canvas.fill(colour)
+        return canvas
+
+    @staticmethod
+    def _compose_face(canvas: QImage, source: QImage, size: int) -> QImage:
+        out = canvas.copy()
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # The central portrait occupies the same broad region visible in the supplied
+        # working textures. The curved clip preserves the base texture around the ears,
+        # scalp and extreme sides instead of replacing the whole atlas with a square.
+        target = QRectF(size * 0.145, size * 0.075, size * 0.71, size * 0.84)
+        clip = QPainterPath()
+        clip.addEllipse(QRectF(size * 0.14, size * 0.07, size * 0.72, size * 0.84))
+        lower = QPainterPath()
+        lower.addRoundedRect(
+            QRectF(size * 0.19, size * 0.48, size * 0.62, size * 0.43),
+            size * 0.08,
+            size * 0.08,
+        )
+        clip = clip.united(lower)
+        painter.setClipPath(clip)
+        painter.setOpacity(0.96)
+        painter.drawImage(target, source)
+        painter.end()
         return out
 
     @staticmethod
-    def _face_mask(size: int) -> Image.Image:
-        mask = Image.new("L", (size, size), 0)
-        draw = ImageDraw.Draw(mask)
-        draw.ellipse(
-            (int(size * 0.14), int(size * 0.07), int(size * 0.86), int(size * 0.92)),
-            fill=255,
-        )
-        draw.rectangle(
-            (int(size * 0.20), int(size * 0.50), int(size * 0.80), int(size * 0.90)),
-            fill=255,
-        )
-        return mask
-
-    @staticmethod
-    def _extend_sides(image: Image.Image, size: int) -> Image.Image:
+    def _extend_sides(image: QImage, size: int) -> QImage:
         out = image.copy()
-        left = image.crop(
-            (int(size * 0.15), int(size * 0.18), int(size * 0.31), int(size * 0.92))
-        ).resize((int(size * 0.22), int(size * 0.74)), Image.Resampling.BICUBIC)
-        right = image.crop(
-            (int(size * 0.69), int(size * 0.18), int(size * 0.85), int(size * 0.92))
-        ).resize((int(size * 0.22), int(size * 0.74)), Image.Resampling.BICUBIC)
-        out.paste(left, (0, int(size * 0.18)))
-        out.paste(right, (int(size * 0.78), int(size * 0.18)))
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        left_source = QRect(int(size * 0.15), int(size * 0.18), int(size * 0.17), int(size * 0.70))
+        right_source = QRect(int(size * 0.68), int(size * 0.18), int(size * 0.17), int(size * 0.70))
+        painter.drawImage(QRectF(0, size * 0.18, size * 0.23, size * 0.72), image, QRectF(left_source))
+        painter.drawImage(QRectF(size * 0.77, size * 0.18, size * 0.23, size * 0.72), image, QRectF(right_source))
+        painter.end()
         return out
 
     @staticmethod
-    def _extend_neck(image: Image.Image, size: int) -> Image.Image:
+    def _extend_neck(image: QImage, size: int) -> QImage:
         out = image.copy()
-        strip = image.crop(
-            (int(size * 0.20), int(size * 0.70), int(size * 0.80), int(size * 0.86))
-        )
-        strip = strip.resize((size, int(size * 0.30)), Image.Resampling.BICUBIC)
-        out.paste(strip, (0, int(size * 0.70)))
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        source = QRectF(size * 0.20, size * 0.69, size * 0.60, size * 0.18)
+        target = QRectF(0, size * 0.70, size, size * 0.30)
+        painter.drawImage(target, image, source)
+        painter.end()
         return out
 
     @staticmethod
-    def _soften_seams(image: Image.Image, amount: float) -> Image.Image:
-        amount = max(0.0, min(1.0, amount))
-        if amount == 0:
+    def _soften(image: QImage, amount: float) -> QImage:
+        amount = max(0.0, min(1.0, float(amount)))
+        if amount <= 0.0:
             return image
-        blurred = image.filter(
-            ImageFilter.GaussianBlur(max(0.1, image.width * 0.004))
+        factor = max(8, int(24 - amount * 14))
+        small = image.scaled(
+            max(1, image.width() // factor),
+            max(1, image.height() // factor),
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
-        return Image.blend(image, blurred, amount * 0.25)
+        blurred = small.scaled(
+            image.width(),
+            image.height(),
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        out = image.copy()
+        painter = QPainter(out)
+        painter.setOpacity(amount * 0.12)
+        painter.drawImage(QPointF(0, 0), blurred)
+        painter.end()
+        return out
