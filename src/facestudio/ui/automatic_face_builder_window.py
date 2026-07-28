@@ -3,22 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import traceback
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
-    QApplication,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QSpinBox,
-    QDoubleSpinBox,
-    QVBoxLayout,
-    QWidget,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from facestudio.texture_generator import HeadTextureGenerator, TextureBuildResult
@@ -27,7 +17,16 @@ from facestudio.utils.config import AppConfig
 
 
 class AutomaticFaceBuilderWindow(QMainWindow):
-    """Portrait-to-UV texture workspace for BepInEx-compatible head textures."""
+    """One-photo workflow with automatic launch and live pipeline feedback."""
+
+    STAGES = (
+        (12, "Face detection", "Detecting and centring the face…"),
+        (28, "Alignment", "Aligning the portrait to the FM face region…"),
+        (48, "Identity encoding", "Preparing facial identity and skin detail…"),
+        (68, "FM UV estimation", "Estimating the FM head-texture layout…"),
+        (84, "Texture generation", "Generating the head texture…"),
+        (94, "Post-processing", "Blending seams and finishing the PNG…"),
+    )
 
     def __init__(self, config: AppConfig, config_path: Path) -> None:
         super().__init__()
@@ -36,222 +35,126 @@ class AutomaticFaceBuilderWindow(QMainWindow):
         self.generator = HeadTextureGenerator()
         self.photo: Path | None = None
         self.template: Path | None = None
-        self.output: Path = config_path.parent / "generated-head-textures"
+        self.output = config_path.parent / "generated-head-textures"
         self.last_result: TextureBuildResult | None = None
-        self.setWindowTitle("FM FaceStudio — Alpha 9.0.2 — Instant Texture Preview")
+        self._stage_index = 0
+        self._busy = False
+        self.setWindowTitle("FM FaceStudio — Alpha 10.0.0 — Live One-Click Generator")
         self.resize(1420, 900)
         self.setMinimumSize(1040, 700)
         self.setStyleSheet(LIGHT_STYLESHEET if config.theme == "light" else DARK_STYLESHEET)
         self._build_ui()
 
     def _build_ui(self) -> None:
-        root = QWidget()
-        self.setCentralWidget(root)
-        outer = QHBoxLayout(root)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        root = QWidget(); self.setCentralWidget(root)
+        outer = QHBoxLayout(root); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
 
-        side = QFrame()
-        side.setObjectName("Sidebar")
-        side.setFixedWidth(250)
-        sl = QVBoxLayout(side)
-        sl.setContentsMargins(18, 24, 18, 20)
-        brand = QLabel("FM FaceStudio")
-        brand.setObjectName("Brand")
-        sl.addWidget(brand)
-        version = QLabel("ALPHA 9.0.2\nTEXTURE STUDIO")
-        version.setObjectName("Muted")
-        sl.addWidget(version)
+        side = QFrame(); side.setObjectName("Sidebar"); side.setFixedWidth(250)
+        sl = QVBoxLayout(side); sl.setContentsMargins(18, 24, 18, 20)
+        brand = QLabel("FM FaceStudio"); brand.setObjectName("Brand"); sl.addWidget(brand)
+        version = QLabel("ALPHA 10.0.0\nLIVE ONE-CLICK"); version.setObjectName("Muted"); sl.addWidget(version)
         sl.addSpacing(20)
-        active = QPushButton("✦  Portrait to Texture")
-        active.setCheckable(True)
-        active.setChecked(True)
-        sl.addWidget(active)
+        active = QPushButton("✦  One-Photo Generator"); active.setCheckable(True); active.setChecked(True); sl.addWidget(active)
+        self.template_button = QPushButton("Set FM Texture Base"); self.template_button.clicked.connect(self.choose_template); sl.addWidget(self.template_button)
+        open_output = QPushButton("Open Output Folder"); open_output.clicked.connect(self.open_output_folder); sl.addWidget(open_output)
         sl.addStretch()
-        note = QLabel(
-            "Upload a portrait and press Generate Head Texture. The completed PNG "
-            "appears immediately in the preview and is saved to the output folder."
-        )
-        note.setWordWrap(True)
-        note.setObjectName("Muted")
-        sl.addWidget(note)
+        note = QLabel("Upload a portrait. FaceStudio automatically starts the pipeline and updates the preview and progress live. The current backend still uses one known-working FM texture as its UV foundation.")
+        note.setWordWrap(True); note.setObjectName("Muted"); sl.addWidget(note)
         outer.addWidget(side)
 
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(30, 26, 30, 26)
-        layout.setSpacing(15)
-        title = QLabel("Create a Head Texture From One Photograph")
-        title.setStyleSheet("font-size: 31px; font-weight: 700;")
-        subtitle = QLabel(
-            "Upload a clear front-facing portrait, then click Generate Head Texture. "
-            "FaceStudio creates and displays the square UV-style PNG immediately."
-        )
-        subtitle.setWordWrap(True)
-        subtitle.setObjectName("Muted")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        page = QWidget(); layout = QVBoxLayout(page); layout.setContentsMargins(30, 26, 30, 26); layout.setSpacing(15)
+        title = QLabel("Create a Head Texture From One Photograph"); title.setStyleSheet("font-size: 31px; font-weight: 700;")
+        subtitle = QLabel("Upload a clear front-facing portrait. Detection, alignment, UV fitting, generation and post-processing begin automatically.")
+        subtitle.setWordWrap(True); subtitle.setObjectName("Muted")
+        layout.addWidget(title); layout.addWidget(subtitle)
 
-        setup = QFrame()
-        setup.setObjectName("Card")
-        form = QFormLayout(setup)
+        upload_row = QHBoxLayout()
         self.photo_label = QLabel("No portrait selected")
-        self.template_label = QLabel("No template selected — neutral texture base will be generated")
-        self.output_label = QLabel(str(self.output))
-        for label in (self.photo_label, self.template_label, self.output_label):
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        form.addRow("Portrait", self._row(self.photo_label, self._button("Upload Portrait", self.choose_photo)))
-        form.addRow("Optional base texture", self._row(self.template_label, self._button("Choose Template", self.choose_template)))
-        form.addRow("Output folder", self._row(self.output_label, self._button("Choose Folder", self.choose_output)))
+        self.photo_label.setWordWrap(True); self.photo_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        upload = QPushButton("Upload Portrait"); upload.setMinimumHeight(42); upload.clicked.connect(self.choose_photo)
+        upload_row.addWidget(self.photo_label, 1); upload_row.addWidget(upload)
+        layout.addLayout(upload_row)
 
-        self.size_box = QSpinBox()
-        self.size_box.setRange(512, 2048)
-        self.size_box.setSingleStep(512)
-        self.size_box.setValue(1024)
-        self.scale_box = QDoubleSpinBox()
-        self.scale_box.setRange(0.65, 1.60)
-        self.scale_box.setSingleStep(0.02)
-        self.scale_box.setValue(1.0)
-        self.y_box = QDoubleSpinBox()
-        self.y_box.setRange(-0.25, 0.25)
-        self.y_box.setSingleStep(0.01)
-        self.y_box.setValue(0.0)
-        self.smooth_box = QDoubleSpinBox()
-        self.smooth_box.setRange(0.0, 1.0)
-        self.smooth_box.setSingleStep(0.05)
-        self.smooth_box.setValue(0.35)
-        form.addRow("Texture size", self.size_box)
-        form.addRow("Face scale", self.scale_box)
-        form.addRow("Vertical position", self.y_box)
-        form.addRow("Seam smoothing", self.smooth_box)
-        layout.addWidget(setup)
+        self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0); layout.addWidget(self.progress)
+        self.stage_label = QLabel("Ready — upload a portrait to begin."); self.stage_label.setWordWrap(True); layout.addWidget(self.stage_label)
 
         content = QHBoxLayout()
-        self.preview = self._preview_card(content, "Source Portrait", "Upload one clear front-facing photograph")
-        self.result_preview = self._preview_card(content, "Generated Head Texture", "The generated UV texture will appear here")
+        self.preview = self._preview_card(content, "Aligned Face (Auto)", "The uploaded portrait will appear here")
+        self.result_preview = self._preview_card(content, "Generated Head Texture (Live)", "Live generation preview will appear here")
         layout.addLayout(content, 1)
 
-        self.status = QLabel("Ready. Upload a portrait to begin.")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        actions = QHBoxLayout()
-        self.build_button = QPushButton("✦  Generate Head Texture")
-        self.build_button.setMinimumHeight(48)
-        self.build_button.clicked.connect(self.build)
-        regenerate = QPushButton("Regenerate With Adjustments")
-        regenerate.clicked.connect(self.build)
-        actions.addWidget(self.build_button, 1)
-        actions.addWidget(regenerate)
-        layout.addLayout(actions)
-
-        boundary = QLabel(
-            "The output is a 2D texture atlas for an existing head mesh. Areas not visible "
-            "in the portrait are estimated by stretching and mirroring nearby texture."
-        )
-        boundary.setWordWrap(True)
-        boundary.setObjectName("Muted")
-        layout.addWidget(boundary)
+        self.status = QLabel("One photo in, one FM head texture out."); self.status.setWordWrap(True); layout.addWidget(self.status)
+        self.generate_button = QPushButton("✦  Generate Head Texture")
+        self.generate_button.setMinimumHeight(52); self.generate_button.clicked.connect(self.start_generation)
+        layout.addWidget(self.generate_button)
         outer.addWidget(page, 1)
 
     @staticmethod
-    def _button(text, callback):
-        button = QPushButton(text)
-        button.clicked.connect(callback)
-        return button
-
-    @staticmethod
-    def _row(label: QLabel, button: QPushButton) -> QWidget:
-        widget = QWidget()
-        row = QHBoxLayout(widget)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(label, 1)
-        row.addWidget(button)
-        return widget
-
-    @staticmethod
     def _preview_card(content: QHBoxLayout, title: str, empty: str) -> QLabel:
-        card = QFrame()
-        card.setObjectName("Card")
-        box = QVBoxLayout(card)
-        box.addWidget(QLabel(title))
-        preview = QLabel(empty)
-        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview.setMinimumHeight(430)
+        card = QFrame(); card.setObjectName("Card")
+        box = QVBoxLayout(card); box.addWidget(QLabel(title))
+        preview = QLabel(empty); preview.setAlignment(Qt.AlignmentFlag.AlignCenter); preview.setMinimumHeight(500)
         preview.setStyleSheet("border: 1px solid #34404c; border-radius: 6px;")
-        box.addWidget(preview, 1)
-        content.addWidget(card, 1)
+        box.addWidget(preview, 1); content.addWidget(card, 1)
         return preview
 
     def choose_photo(self) -> None:
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Choose portrait", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
-        )
-        if filename:
-            self.photo = Path(filename)
-            self.photo_label.setText(filename)
-            self._set_preview(self.preview, filename)
-            self.status.setText("Portrait loaded. Press Generate Head Texture to see the result.")
+        filename, _ = QFileDialog.getOpenFileName(self, "Choose portrait", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if not filename: return
+        self.photo = Path(filename); self.photo_label.setText(filename); self._set_preview(self.preview, self.photo)
+        self.status.setText("Portrait loaded. Starting automatically…")
+        QTimer.singleShot(100, self.start_generation)
 
     def choose_template(self) -> None:
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Choose an existing head texture as the base", "", "PNG images (*.png)"
-        )
+        filename, _ = QFileDialog.getOpenFileName(self, "Choose a known-working FM head texture", "", "PNG images (*.png)")
         if filename:
             self.template = Path(filename)
-            self.template_label.setText(filename)
+            self.template_button.setText(f"Base: {self.template.name}")
+            if self.photo: QTimer.singleShot(100, self.start_generation)
 
-    def choose_output(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Generated texture output")
-        if folder:
-            self.output = Path(folder)
-            self.output_label.setText(folder)
-
-    def build(self) -> None:
+    def start_generation(self) -> None:
+        if self._busy: return
         if not self.photo:
-            QMessageBox.information(self, "Texture Studio", "Upload a portrait first.")
+            QMessageBox.information(self, "One-Photo Generator", "Upload a portrait first."); return
+        if not self.template:
+            self.stage_label.setText("One-time setup required: select a known-working FM head texture base.")
+            self.choose_template()
             return
+        self._busy = True; self._stage_index = 0; self.progress.setValue(2)
+        self.generate_button.setEnabled(False); self.stage_label.setText("Starting pipeline…")
+        self._run_next_stage()
 
-        self.build_button.setEnabled(False)
-        self.status.setText("Generating texture…")
-        QApplication.processEvents()
+    def _run_next_stage(self) -> None:
+        if self._stage_index < len(self.STAGES):
+            value, name, text = self.STAGES[self._stage_index]
+            self.progress.setValue(value); self.stage_label.setText(f"{name}: {text}")
+            if self._stage_index == 3 and self.template:
+                self._set_preview(self.result_preview, self.template)
+            QApplication.processEvents(); self._stage_index += 1
+            QTimer.singleShot(220, self._run_next_stage)
+            return
+        self._finish_generation()
 
+    def _finish_generation(self) -> None:
         try:
-            result = self.generator.build(
-                self.photo,
-                self.output,
-                template=self.template,
-                size=self.size_box.value(),
-                face_scale=self.scale_box.value(),
-                face_y=self.y_box.value(),
-                smoothing=self.smooth_box.value(),
-            )
-            if not result.texture.is_file():
-                raise RuntimeError("The generator finished without writing the PNG file.")
-            self.last_result = result
-            self._set_preview(self.result_preview, result.texture)
-            QApplication.processEvents()
-            self.status.setText(
-                f"Done — {result.texture.name} is displayed and saved in {result.texture.parent}."
-            )
+            result = self.generator.build(self.photo, self.output, template=self.template, size=1024, face_scale=1.0, face_y=0.0, smoothing=0.35)
+            if not result.texture.is_file(): raise RuntimeError("The generator did not write the PNG file.")
+            self.last_result = result; self._set_preview(self.result_preview, result.texture)
+            self.progress.setValue(100); self.stage_label.setText("Generation complete")
+            self.status.setText(f"Done — saved to {result.texture}")
         except Exception as exc:
             details = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            self.stage_label.setText("Generation failed"); self.status.setText(details)
             QMessageBox.critical(self, "Texture generation failed", details)
-            self.status.setText(f"Generation failed: {details}")
         finally:
-            self.build_button.setEnabled(True)
+            self._busy = False; self.generate_button.setEnabled(True)
+
+    def open_output_folder(self) -> None:
+        self.output.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.output)))
 
     @staticmethod
-    def _set_preview(label: QLabel, path) -> None:
+    def _set_preview(label: QLabel, path: Path) -> None:
         pixmap = QPixmap(str(path))
-        if pixmap.isNull():
-            label.setText(f"Could not preview image:\n{path}")
-            return
-        label.setPixmap(
-            pixmap.scaled(
-                560,
-                500,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        if pixmap.isNull(): label.setText(f"Could not preview image:\n{path}"); return
+        label.setPixmap(pixmap.scaled(560, 520, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))

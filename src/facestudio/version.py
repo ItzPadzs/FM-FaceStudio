@@ -1,6 +1,6 @@
 from __future__ import annotations
 
 APP_NAME = "FM FaceStudio"
-APP_VERSION = "Alpha 9.2.0 — Template Identity Fit"
-PACKAGE_VERSION = "9.2.0-alpha"
-APP_TAGLINE = "Upload a portrait and fit its facial identity into a known-working FM head texture"
+APP_VERSION = "Alpha 10.0.0 — Live One-Click Generator"
+PACKAGE_VERSION = "10.0.0-alpha"
+APP_TAGLINE = "Upload one portrait and watch the automatic head-texture pipeline update live"
