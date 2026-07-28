@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from facestudio.ai.fm_style_renderer import FMStyleRendererEngine
 from facestudio.ai.generation_engine import EngineRegistry, GenerationRequest, GenerationResult, GenerationSettings
-from facestudio.ai.unified_face_warp import UnifiedFaceWarpEngine
 from facestudio.donor_asset_index import DonorMatch, DonorMatcher
 
 
@@ -15,12 +15,12 @@ class FaceStudio2Result:
 
 
 class FaceStudio2Pipeline:
-    """Portrait -> donor prior -> continuous fixed-UV 1024x1024 texture."""
+    """Portrait -> fixed UV geometry -> deterministic FM diffuse-style texture."""
 
     def __init__(self, donor_index: Path) -> None:
         self.matcher = DonorMatcher(donor_index)
         self.registry = EngineRegistry()
-        self.registry.register(UnifiedFaceWarpEngine())
+        self.registry.register(FMStyleRendererEngine())
 
     def run(self, portrait: Path, output: Path, progress=None) -> FaceStudio2Result:
         matches = self.matcher.rank(portrait, limit=1)
@@ -35,6 +35,6 @@ class FaceStudio2Pipeline:
             output=Path(output),
             donor_id=donor.donor_id,
             donor_name=donor.name,
-            settings=GenerationSettings(engine="unified-face-warp-v2", strength=1.0),
+            settings=GenerationSettings(engine="fm-style-renderer-v1", strength=1.0),
         )
         return FaceStudio2Result(donor=donor, generation=self.registry.generate(request, progress))

@@ -10,7 +10,7 @@ from facestudio.ui.facestudio2_window import FaceStudio2Window
 
 
 class FaceStudio21Window(FaceStudio2Window):
-    """FaceStudio desktop window with app-owned assets and fixed-UV generation."""
+    """FaceStudio desktop window with app-owned assets and FM-style rendering."""
 
     def __init__(self, config, config_path: Path) -> None:
         self.assets = AssetLibraryManager(config_path.parent)
@@ -26,12 +26,12 @@ class FaceStudio21Window(FaceStudio2Window):
             self.pipeline = FaceStudio2Pipeline(status.index_path)
             self.index_button.setText("Manage Donor Library")
             self.engine_status.setText(
-                f"Unified fixed-UV warp ACTIVE\n{status.donor_count:,} local donors indexed\nOutput: 1024 × 1024 PNG"
+                f"FM diffuse-style renderer ACTIVE\n{status.donor_count:,} local donors indexed\nOutput: 1024 × 1024 PNG"
             )
-            self.status.setText("Asset library ready. Upload a portrait to generate in the canonical FM UV layout.")
+            self.status.setText("Asset library ready. Upload a portrait to generate fixed-UV geometry and the FM diffuse-style finish.")
         else:
             self.pipeline = None
-            self.engine_status.setText("Unified fixed-UV warp READY\nDonor assets not installed\nOutput: 1024 × 1024 PNG")
+            self.engine_status.setText("FM diffuse-style renderer READY\nDonor assets not installed\nOutput: 1024 × 1024 PNG")
             self.status.setText(
                 "Upload a portrait. FaceStudio will ask for a working FM texture folder once, then build and remember the library automatically."
             )
@@ -53,10 +53,10 @@ class FaceStudio21Window(FaceStudio2Window):
             self.pipeline = FaceStudio2Pipeline(status.index_path)
             self.index_button.setText("Manage Donor Library")
             self.engine_status.setText(
-                f"Unified fixed-UV warp ACTIVE\n{status.donor_count:,} local donors indexed\nOutput: 1024 × 1024 PNG"
+                f"FM diffuse-style renderer ACTIVE\n{status.donor_count:,} local donors indexed\nOutput: 1024 × 1024 PNG"
             )
             self.status.setText(
-                f"Library ready — {status.donor_count:,} working textures indexed for fixed-UV generation."
+                f"Library ready — {status.donor_count:,} working textures indexed for fixed-UV styled generation."
             )
             if self.photo:
                 self.start_generation()
