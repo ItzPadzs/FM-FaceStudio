@@ -1,6 +1,6 @@
 from __future__ import annotations
 
 APP_NAME = "FM FaceStudio"
-APP_VERSION = "Alpha 13.0.0 — Identity Transfer Engine"
-PACKAGE_VERSION = "13.0.0-alpha"
-APP_TAGLINE = "Run portrait-to-FM generation through interchangeable engines with progressive provenance and reviewed training capture"
+APP_VERSION = "2.0.0 Alpha — End-to-End Prototype"
+PACKAGE_VERSION = "2.0.0-alpha.1"
+APP_TAGLINE = "Upload one portrait, select the closest indexed donor and generate a visibly transformed FM UV texture"
