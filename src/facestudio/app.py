@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from PySide6.QtWidgets import QApplication
 
-from facestudio.ui.facestudio21_window import FaceStudio21Window
+from facestudio.ui.facestudio30_window import FaceStudio30Window
 from facestudio.utils.config import AppConfig
 from facestudio.utils.logging_setup import configure_logging
 from facestudio.utils.paths import app_data_dir
@@ -23,6 +23,6 @@ def main() -> int:
 
     config_path = data_dir / "facestudio-settings.json"
     config = AppConfig.load(config_path)
-    window = FaceStudio21Window(config, config_path)
+    window = FaceStudio30Window(config, config_path)
     window.show()
     return app.exec()
