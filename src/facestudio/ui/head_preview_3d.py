@@ -64,7 +64,11 @@ def build_head_mesh(longitude_segments: int = 64, latitude_segments: int = 48) -
             b = a + 1
             c = a + stride
             d = c + 1
-            triangles.extend((a, c, b, b, c, d))
+
+            # Counter-clockwise winding when viewed from outside the head.
+            # The previous inward winding caused GL_CULL_FACE to remove every
+            # triangle, leaving the preview window completely blank.
+            triangles.extend((a, b, c, b, d, c))
             for first, second in ((a, b), (a, c), (b, d), (c, d)):
                 edges.add((min(first, second), max(first, second)))
 
