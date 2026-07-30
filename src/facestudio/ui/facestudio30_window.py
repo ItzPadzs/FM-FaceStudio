@@ -7,17 +7,18 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
 from facestudio.project_workspace import FaceStudioProject
 from facestudio.ui.facestudio21_window import FaceStudio21Window
 from facestudio.ui.five_point_alignment import FivePointAlignmentDialog
+from facestudio.ui.head_preview_3d import HeadPreviewDialog
 
 
 class FaceStudio30Window(FaceStudio21Window):
-    """Project workspace with UI-assisted, five-point portrait alignment."""
+    """Project workspace with alignment and interactive 3D texture review."""
 
     def __init__(self, config, config_path: Path) -> None:
         self.project: FaceStudioProject | None = None
         self.projects_root = config_path.parent / "projects"
         self.original_photo: Path | None = None
         super().__init__(config, config_path)
-        self.setWindowTitle("FM FaceStudio — 3.1 Five-Point Alignment")
+        self.setWindowTitle("FM FaceStudio — 3.2 Interactive 3D Preview")
         self._install_project_bar()
 
     def _install_project_bar(self) -> None:
@@ -34,6 +35,12 @@ class FaceStudio30Window(FaceStudio21Window):
         self.align_button.setEnabled(False)
         self.align_button.clicked.connect(self.open_alignment_editor)
         layout.addWidget(self.align_button)
+
+        self.preview_3d_button = QPushButton("3D Preview")
+        self.preview_3d_button.setEnabled(False)
+        self.preview_3d_button.setToolTip("Inspect the generated texture on an interactive head proxy")
+        self.preview_3d_button.clicked.connect(self.open_3d_preview)
+        layout.addWidget(self.preview_3d_button)
 
         new_button = QPushButton("New Project")
         new_button.clicked.connect(self.new_project)
@@ -55,6 +62,7 @@ class FaceStudio30Window(FaceStudio21Window):
         directory = self.projects_root / safe_name
         self.project = FaceStudioProject(name=name, directory=directory)
         self.project.save()
+        self.preview_3d_button.setEnabled(False)
         self.status.setText(f"Project created: {directory}")
 
     def open_project(self) -> None:
@@ -76,7 +84,9 @@ class FaceStudio30Window(FaceStudio21Window):
                 self.photo_card.setText(f"{active_photo.name}\n{active_photo.parent}")
                 self._set_preview(self.source_preview, active_photo, 560, 430)
                 self.align_button.setEnabled(self.original_photo is not None)
-            if self.project.generated_texture and self.project.generated_texture.is_file():
+            texture_available = bool(self.project.generated_texture and self.project.generated_texture.is_file())
+            self.preview_3d_button.setEnabled(texture_available)
+            if texture_available:
                 self._set_preview(self.texture_preview, self.project.generated_texture, 680, 430)
             self.status.setText(f"Project opened: {self.project.directory}")
         except Exception as exc:
@@ -108,11 +118,13 @@ class FaceStudio30Window(FaceStudio21Window):
         self.photo_card.setText(f"{self.photo.name}\n{self.photo.parent}")
         self._set_preview(self.source_preview, self.photo, 560, 430)
         self.align_button.setEnabled(True)
+        self.preview_3d_button.setEnabled(False)
 
         if self.project is not None:
             self.project.portrait = self.original_photo
             self.project.aligned_portrait = None
             self.project.alignment_landmarks = {}
+            self.project.generated_texture = None
             self.project.save()
 
         if self.pipeline is None:
@@ -162,6 +174,15 @@ class FaceStudio30Window(FaceStudio21Window):
         self.status.setText("Five-point alignment confirmed. Starting UV-safe generation…")
         self.start_generation()
 
+    def open_3d_preview(self) -> None:
+        texture = self.project.generated_texture if self.project is not None else None
+        if texture is None or not texture.is_file():
+            QMessageBox.information(self, "3D preview", "Generate or open a project with a texture first.")
+            self.preview_3d_button.setEnabled(False)
+            return
+        dialog = HeadPreviewDialog(texture, self)
+        dialog.exec()
+
     def start_generation(self) -> None:
         super().start_generation()
         if self.project is not None and self.photo is not None:
@@ -169,3 +190,5 @@ class FaceStudio30Window(FaceStudio21Window):
             if output.is_file():
                 self.project.generated_texture = output
                 self.project.save()
+                self.preview_3d_button.setEnabled(True)
+                self.status.setText("Generation complete. Open 3D Preview to inspect the texture before export.")
