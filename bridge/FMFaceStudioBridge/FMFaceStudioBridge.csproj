@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>FMFaceStudioBridge</AssemblyName>
+    <RootNamespace>FMFaceStudioBridge</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <BepInExRoot Condition="'$(BepInExRoot)' == ''">$(FM26_ROOT)\BepInEx</BepInExRoot>
+    <ManagedRoot Condition="'$(ManagedRoot)' == ''">$(FM26_ROOT)\fm_Data\Managed</ManagedRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(BepInExRoot)\core\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP">
+      <HintPath>$(BepInExRoot)\core\BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="ValidateLocalReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(FM26_ROOT)' == ''" Text="Set FM26_ROOT to the Football Manager 26 installation directory." />
+    <Error Condition="!Exists('$(BepInExRoot)\core\BepInEx.Core.dll')" Text="BepInEx.Core.dll was not found beneath $(BepInExRoot)." />
+    <Error Condition="!Exists('$(BepInExRoot)\core\BepInEx.Unity.IL2CPP.dll')" Text="BepInEx.Unity.IL2CPP.dll was not found beneath $(BepInExRoot)." />
+  </Target>
+</Project>
