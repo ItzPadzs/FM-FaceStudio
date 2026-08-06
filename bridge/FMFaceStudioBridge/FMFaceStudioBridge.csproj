@@ -12,6 +12,7 @@
   <PropertyGroup>
     <BepInExRoot Condition="'$(BepInExRoot)' == ''">$(FM26_ROOT)\BepInEx</BepInExRoot>
     <ManagedRoot Condition="'$(ManagedRoot)' == ''">$(FM26_ROOT)\fm_Data\Managed</ManagedRoot>
+    <InteropRoot Condition="'$(InteropRoot)' == ''">$(BepInExRoot)\interop</InteropRoot>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,11 +24,26 @@
       <HintPath>$(BepInExRoot)\core\BepInEx.Unity.IL2CPP.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(BepInExRoot)\core\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(InteropRoot)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIElementsModule">
+      <HintPath>$(InteropRoot)\UnityEngine.UIElementsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <Target Name="ValidateLocalReferences" BeforeTargets="ResolveReferences">
     <Error Condition="'$(FM26_ROOT)' == ''" Text="Set FM26_ROOT to the Football Manager 26 installation directory." />
     <Error Condition="!Exists('$(BepInExRoot)\core\BepInEx.Core.dll')" Text="BepInEx.Core.dll was not found beneath $(BepInExRoot)." />
     <Error Condition="!Exists('$(BepInExRoot)\core\BepInEx.Unity.IL2CPP.dll')" Text="BepInEx.Unity.IL2CPP.dll was not found beneath $(BepInExRoot)." />
+    <Error Condition="!Exists('$(BepInExRoot)\core\Il2CppInterop.Runtime.dll')" Text="Il2CppInterop.Runtime.dll was not found beneath $(BepInExRoot)." />
+    <Error Condition="!Exists('$(InteropRoot)\UnityEngine.CoreModule.dll')" Text="Run Football Manager through BepInEx once so UnityEngine.CoreModule.dll is generated beneath $(InteropRoot)." />
+    <Error Condition="!Exists('$(InteropRoot)\UnityEngine.UIElementsModule.dll')" Text="Run Football Manager through BepInEx once so UnityEngine.UIElementsModule.dll is generated beneath $(InteropRoot)." />
   </Target>
 </Project>
