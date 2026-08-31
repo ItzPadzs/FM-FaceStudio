@@ -2,23 +2,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from facestudio.project_workspace import FaceStudioProject
 from facestudio.ui.facestudio21_window import FaceStudio21Window
 from facestudio.ui.five_point_alignment import FivePointAlignmentDialog
 from facestudio.ui.head_preview_3d import HeadPreviewDialog
+from facestudio.ui.pages.hair_matcher import HairMatcherPage
 
 
 class FaceStudio30Window(FaceStudio21Window):
-    """Project workspace with alignment and interactive 3D texture review."""
+    """Project workspace with alignment, 3D review and native FM hair matching."""
 
     def __init__(self, config, config_path: Path) -> None:
         self.project: FaceStudioProject | None = None
         self.projects_root = config_path.parent / "projects"
+        self.state_root = config_path.parent
         self.original_photo: Path | None = None
         super().__init__(config, config_path)
-        self.setWindowTitle("FM FaceStudio — 3.2 Interactive 3D Preview")
+        self.setWindowTitle("FM FaceStudio — 3.3 Hair Matcher + Interactive 3D Preview")
         self._install_project_bar()
 
     def _install_project_bar(self) -> None:
@@ -42,6 +54,13 @@ class FaceStudio30Window(FaceStudio21Window):
         self.preview_3d_button.clicked.connect(self.open_3d_preview)
         layout.addWidget(self.preview_3d_button)
 
+        self.hair_matcher_button = QPushButton("Hair Matcher")
+        self.hair_matcher_button.setToolTip(
+            "Automatically rank native FM hair, browse manually, compare candidates and build an untouched hair test package"
+        )
+        self.hair_matcher_button.clicked.connect(self.open_hair_matcher)
+        layout.addWidget(self.hair_matcher_button)
+
         new_button = QPushButton("New Project")
         new_button.clicked.connect(self.new_project)
         layout.addWidget(new_button)
@@ -52,6 +71,18 @@ class FaceStudio30Window(FaceStudio21Window):
         save_button.clicked.connect(self.save_project)
         layout.addWidget(save_button)
         self.page_layout.insertWidget(0, bar)
+
+    def open_hair_matcher(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("FM FaceStudio — Hair Matcher")
+        dialog.resize(1380, 820)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        page = HairMatcherPage(self.state_root)
+        if self.project is not None:
+            page.set_project(self.project, self.project.directory)
+        layout.addWidget(page)
+        dialog.exec()
 
     def new_project(self) -> None:
         name = self.project_name.text().strip()
