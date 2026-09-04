@@ -5,32 +5,45 @@ on:
     branches:
       - facestudio-v0.75-browser-baseline
     paths:
-      - '.bootstrap/v075_pack/**'
+      - '.github/workflows/bootstrap-v075.yml'
 
 permissions:
   contents: write
+  issues: read
 
 jobs:
   migrate:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout migration branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Rebuild clean browser source
+      - name: Rebuild clean browser source from migration issue
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          parts=(.bootstrap/v075_pack/*.b64)
-          if [ "${#parts[@]}" -ne 6 ]; then
-            echo "Waiting for all 6 verified source chunks; currently have ${#parts[@]}."
-            exit 0
-          fi
-
-          cat .bootstrap/v075_pack/*.b64 | base64 --decode > /tmp/FM-FaceStudio-v0.75-clean-github.zip
+          gh api "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments.json
+          python - <<'PY'
+          import base64, json
+          from pathlib import Path
+          rows=json.loads(Path('/tmp/comments.json').read_text())
+          parts={}
+          for row in rows:
+              body=(row.get('body') or '').strip()
+              if not body.startswith('V075ZIP:'):
+                  continue
+              _, idx, payload = body.split(':', 2)
+              parts[int(idx)] = payload.strip()
+          if sorted(parts) != list(range(6)):
+              raise SystemExit(f'Expected V075ZIP chunks 0..5, found {sorted(parts)}')
+          Path('/tmp/FM-FaceStudio-v0.75-clean-github.zip').write_bytes(
+              base64.b64decode(''.join(parts[i] for i in range(6)))
+          )
+          PY
           echo "85e3b4df54f1ff8ab15c4e29b2a0fe02c4cf13dabc4751839a4ab2377680f307  /tmp/FM-FaceStudio-v0.75-clean-github.zip" | sha256sum -c -
           rm -rf /tmp/facestudio-v075
           mkdir -p /tmp/facestudio-v075
