@@ -5,7 +5,7 @@ on:
     branches:
       - facestudio-v0.75-browser-baseline
     paths:
-      - '.bootstrap/v075_full/**'
+      - '.bootstrap/v075_pack/**'
 
 permissions:
   contents: write
@@ -24,17 +24,17 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          parts=(.bootstrap/v075_full/*.b64)
-          if [ "${#parts[@]}" -ne 13 ]; then
-            echo "Waiting for all 13 source chunks; currently have ${#parts[@]}."
+          parts=(.bootstrap/v075_pack/*.b64)
+          if [ "${#parts[@]}" -ne 4 ]; then
+            echo "Waiting for all 4 verified source chunks; currently have ${#parts[@]}."
             exit 0
           fi
 
-          cat .bootstrap/v075_full/*.b64 | base64 --decode > /tmp/facestudio-v075.tar.xz
+          cat .bootstrap/v075_pack/*.b64 | base64 --decode > /tmp/facestudio-v075.tar.xz
+          echo "70847fc95859ea33c94e9d61efd7771cdba188e92aeeff01dc61a22cff610d2d  /tmp/facestudio-v075.tar.xz" | sha256sum -c -
           mkdir -p /tmp/facestudio-v075
           tar -xJf /tmp/facestudio-v075.tar.xz -C /tmp/facestudio-v075
 
-          # Replace the active repository tree completely. Keep only Git metadata.
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a /tmp/facestudio-v075/. .
 
