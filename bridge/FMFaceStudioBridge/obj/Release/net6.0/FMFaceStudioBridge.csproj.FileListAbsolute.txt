@@ -1,0 +1,12 @@
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\bin\Release\net6.0\FMFaceStudioBridge.deps.json
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\bin\Release\net6.0\FMFaceStudioBridge.dll
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\bin\Release\net6.0\FMFaceStudioBridge.pdb
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.csproj.AssemblyReference.cache
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.AssemblyInfoInputs.cache
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.AssemblyInfo.cs
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.csproj.CoreCompileInputs.cache
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.dll
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\refint\FMFaceStudioBridge.dll
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\FMFaceStudioBridge.pdb
+C:\Users\paddy\Documents\GitHub\FM-FaceStudio\bridge\FMFaceStudioBridge\obj\Release\net6.0\ref\FMFaceStudioBridge.dll
