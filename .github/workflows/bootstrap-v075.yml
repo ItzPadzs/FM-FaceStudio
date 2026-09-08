@@ -2,10 +2,8 @@ name: Bootstrap v0.75 Browser Baseline
 
 on:
   push:
-    branches:
-      - facestudio-v0.75-browser-baseline
-    paths:
-      - '.github/workflows/bootstrap-v075.yml'
+    branches: [facestudio-v0.75-browser-baseline]
+    paths: ['.github/workflows/bootstrap-v075.yml']
 
 permissions:
   contents: write
@@ -17,52 +15,46 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout migration branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Rebuild clean browser source from migration issue
+      - name: Inspect recoverable browser source
         shell: bash
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments.json
           python - <<'PY'
-          import base64, json
+          import base64,json,struct,zlib
           from pathlib import Path
           rows=json.loads(Path('/tmp/comments.json').read_text())
           parts={}
           for row in rows:
               body=(row.get('body') or '').strip()
-              if not body.startswith('V075ZIP:'):
-                  continue
-              _, idx, payload = body.split(':', 2)
-              parts[int(idx)] = payload.strip()
-          if sorted(parts) != list(range(6)):
-              raise SystemExit(f'Expected V075ZIP chunks 0..5, found {sorted(parts)}')
-          Path('/tmp/FM-FaceStudio-v0.75-clean-github.zip').write_bytes(
-              base64.b64decode(''.join(parts[i] for i in range(6)))
-          )
+              if body.startswith('V075ZIP:'):
+                  try:
+                      _,idx,payload=body.split(':',2); parts[int(idx)]=payload.strip()
+                  except Exception: pass
+          have=sorted(k for k in parts if isinstance(k,int))
+          print('PAYLOAD_CHUNKS',have)
+          raw=base64.b64decode(''.join(parts[i] for i in range(5)))
+          print('PARTIAL_ZIP_BYTES',len(raw))
+          pos=0; complete=[]
+          while pos+30 <= len(raw) and raw[pos:pos+4]==b'PK\x03\x04':
+              vals=struct.unpack_from('<4s5H3I2H',raw,pos)
+              _,ver,flag,method,tm,dt,crc,csize,usize,nlen,xlen=vals
+              name=raw[pos+30:pos+30+nlen].decode('utf-8','replace')
+              start=pos+30+nlen+xlen; end=start+csize
+              if end>len(raw):
+                  print('TRUNCATED_ENTRY',name,'need',end-len(raw),'more bytes'); break
+              data=raw[start:end]
+              try:
+                  out=zlib.decompress(data,-15) if method==8 else data
+                  if len(out)!=usize: raise ValueError(f'{len(out)} != {usize}')
+              except Exception as e:
+                  print('BAD_ENTRY',name,e); break
+              complete.append((name,usize,csize))
+              pos=end
+          print('COMPLETE_COUNT',len(complete))
+          for name,usize,csize in complete: print('COMPLETE',name,usize,csize)
+          print('NEXT_OFFSET',pos,'REMAINING',len(raw)-pos)
           PY
-          echo "85e3b4df54f1ff8ab15c4e29b2a0fe02c4cf13dabc4751839a4ab2377680f307  /tmp/FM-FaceStudio-v0.75-clean-github.zip" | sha256sum -c -
-          rm -rf /tmp/facestudio-v075
-          mkdir -p /tmp/facestudio-v075
-          unzip -q /tmp/FM-FaceStudio-v0.75-clean-github.zip -d /tmp/facestudio-v075
-
-          test -f /tmp/facestudio-v075/RUN.bat
-          test -f /tmp/facestudio-v075/browser_app/app/main.py
-          test -f /tmp/facestudio-v075/browser_app/app/static/index.html
-          test ! -e /tmp/facestudio-v075/RUN_LEGACY.bat
-          test ! -e /tmp/facestudio-v075/launcher.py
-          grep -q 'browser_app\\run_windows.bat' /tmp/facestudio-v075/RUN.bat
-
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/facestudio-v075/. .
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --check
-          git diff --cached --quiet && exit 0
-          git commit -m "Replace legacy desktop app with v0.75 browser FaceStudio"
-          git push origin HEAD:facestudio-v0.75-browser-baseline
