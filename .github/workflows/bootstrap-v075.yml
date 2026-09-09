@@ -3,18 +3,17 @@ name: Bootstrap v0.75 Browser Baseline
 on:
   push:
     branches: [facestudio-v0.75-browser-baseline]
-    paths: ['.github/workflows/bootstrap-v075.yml']
+    paths:
+      - '.github/workflows/bootstrap-v075.yml'
+      - '.bootstrap/**'
   workflow_dispatch:
 
 permissions:
   contents: write
-  issues: read
 
 jobs:
   migrate:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,40 +23,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments-pages.json
           python - <<'PY'
-          import base64, hashlib, json, zipfile
+          import base64, hashlib, zipfile
           from pathlib import Path
 
-          raw_text = Path('/tmp/comments-pages.json').read_text(encoding='utf-8')
-          try:
-              rows = json.loads(raw_text)
-          except json.JSONDecodeError:
-              dec = json.JSONDecoder(); rows=[]; pos=0
-              while pos < len(raw_text):
-                  while pos < len(raw_text) and raw_text[pos].isspace(): pos += 1
-                  if pos >= len(raw_text): break
-                  obj, pos = dec.raw_decode(raw_text, pos)
-                  rows.extend(obj if isinstance(obj, list) else [obj])
+          root = Path('.bootstrap')
+          expected = [root / f'v075.part{i:02d}' for i in range(14)]
+          missing = [str(p) for p in expected if not p.is_file()]
+          if missing:
+              raise SystemExit('Missing bootstrap parts: ' + ', '.join(missing))
 
-          parts = {}
-          for row in rows:
-              body = (row.get('body') or '').strip()
-              if not body.startswith('V075FINAL:'):
-                  continue
-              try:
-                  _, idx, payload = body.split(':', 2)
-                  parts[int(idx)] = payload.strip()
-              except Exception:
-                  pass
-
-          expected = list(range(6))
-          have = sorted(parts)
-          print('FINAL_CHUNKS', have)
-          if have != expected:
-              raise SystemExit(f'Need exactly chunks {expected}; got {have}')
-
-          data = base64.b64decode(''.join(parts[i] for i in expected), validate=True)
+          encoded = ''.join(p.read_text(encoding='ascii').strip() for p in expected)
+          data = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(data).hexdigest()
           expected_sha = '28834a6d7a6b1d8bad8d0b5af710bd9707db7c9adbea19c767eef4174999681f'
           print('ZIP_BYTES', len(data))
@@ -77,6 +54,9 @@ jobs:
 
           files = [p for p in out.rglob('*') if p.is_file()]
           print('SOURCE_FILES', len(files))
+          if len(files) != 68:
+              raise SystemExit(f'Expected 68 source files, found {len(files)}')
+
           required = [
               out/'RUN.bat',
               out/'UPDATE_AND_RUN.bat',
@@ -88,6 +68,7 @@ jobs:
           missing = [str(p.relative_to(out)) for p in required if not p.is_file()]
           if missing:
               raise SystemExit('Missing required files: ' + ', '.join(missing))
+
           forbidden = [out/'launcher.py', out/'RUN_LEGACY.bat', out/'src']
           present = [str(p.relative_to(out)) for p in forbidden if p.exists()]
           if present:
