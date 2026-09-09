@@ -4,6 +4,7 @@ on:
   push:
     branches: [facestudio-v0.75-browser-baseline]
     paths: ['.github/workflows/bootstrap-v075.yml']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,44 +19,107 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Inspect recoverable browser source
+
+      - name: Reconstruct verified browser source
         shell: bash
         run: |
           set -euo pipefail
-          echo "Inspecting v0.75 recovery payload"
-          gh api "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments.json
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments-pages.json
           python - <<'PY'
-          import base64,json,struct,zlib
+          import base64, hashlib, json, zipfile
           from pathlib import Path
-          rows=json.loads(Path('/tmp/comments.json').read_text())
-          parts={}
+
+          raw_text = Path('/tmp/comments-pages.json').read_text(encoding='utf-8')
+          try:
+              rows = json.loads(raw_text)
+          except json.JSONDecodeError:
+              dec = json.JSONDecoder(); rows=[]; pos=0
+              while pos < len(raw_text):
+                  while pos < len(raw_text) and raw_text[pos].isspace(): pos += 1
+                  if pos >= len(raw_text): break
+                  obj, pos = dec.raw_decode(raw_text, pos)
+                  rows.extend(obj if isinstance(obj, list) else [obj])
+
+          parts = {}
           for row in rows:
-              body=(row.get('body') or '').strip()
-              if body.startswith('V075ZIP:'):
-                  try:
-                      _,idx,payload=body.split(':',2); parts[int(idx)]=payload.strip()
-                  except Exception: pass
-          have=sorted(k for k in parts if isinstance(k,int))
-          print('PAYLOAD_CHUNKS',have)
-          raw=base64.b64decode(''.join(parts[i] for i in range(5)))
-          print('PARTIAL_ZIP_BYTES',len(raw))
-          pos=0; complete=[]
-          while pos+30 <= len(raw) and raw[pos:pos+4]==b'PK\x03\x04':
-              vals=struct.unpack_from('<4s5H3I2H',raw,pos)
-              _,ver,flag,method,tm,dt,crc,csize,usize,nlen,xlen=vals
-              name=raw[pos+30:pos+30+nlen].decode('utf-8','replace')
-              start=pos+30+nlen+xlen; end=start+csize
-              if end>len(raw):
-                  print('TRUNCATED_ENTRY',name,'need',end-len(raw),'more bytes'); break
-              data=raw[start:end]
+              body = (row.get('body') or '').strip()
+              if not body.startswith('V075FINAL:'):
+                  continue
               try:
-                  out=zlib.decompress(data,-15) if method==8 else data
-                  if len(out)!=usize: raise ValueError(f'{len(out)} != {usize}')
-              except Exception as e:
-                  print('BAD_ENTRY',name,e); break
-              complete.append((name,usize,csize))
-              pos=end
-          print('COMPLETE_COUNT',len(complete))
-          for name,usize,csize in complete: print('COMPLETE',name,usize,csize)
-          print('NEXT_OFFSET',pos,'REMAINING',len(raw)-pos)
+                  _, idx, payload = body.split(':', 2)
+                  parts[int(idx)] = payload.strip()
+              except Exception:
+                  pass
+
+          expected = list(range(6))
+          have = sorted(parts)
+          print('FINAL_CHUNKS', have)
+          if have != expected:
+              raise SystemExit(f'Need exactly chunks {expected}; got {have}')
+
+          data = base64.b64decode(''.join(parts[i] for i in expected), validate=True)
+          digest = hashlib.sha256(data).hexdigest()
+          expected_sha = '28834a6d7a6b1d8bad8d0b5af710bd9707db7c9adbea19c767eef4174999681f'
+          print('ZIP_BYTES', len(data))
+          print('SHA256', digest)
+          if digest != expected_sha:
+              raise SystemExit(f'SHA mismatch: {digest} != {expected_sha}')
+
+          zpath = Path('/tmp/v075.zip')
+          zpath.write_bytes(data)
+          out = Path('/tmp/v075-src')
+          out.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(zpath) as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f'Corrupt ZIP member: {bad}')
+              z.extractall(out)
+
+          files = [p for p in out.rglob('*') if p.is_file()]
+          print('SOURCE_FILES', len(files))
+          required = [
+              out/'RUN.bat',
+              out/'UPDATE_AND_RUN.bat',
+              out/'browser_app'/'run_windows.bat',
+              out/'browser_app'/'app'/'main.py',
+              out/'browser_app'/'app'/'engine'/'hair_matcher.py',
+              out/'.github'/'workflows'/'browser-app.yml',
+          ]
+          missing = [str(p.relative_to(out)) for p in required if not p.is_file()]
+          if missing:
+              raise SystemExit('Missing required files: ' + ', '.join(missing))
+          forbidden = [out/'launcher.py', out/'RUN_LEGACY.bat', out/'src']
+          present = [str(p.relative_to(out)) for p in forbidden if p.exists()]
+          if present:
+              raise SystemExit('Legacy desktop paths present: ' + ', '.join(present))
           PY
+
+      - name: Replace legacy tree with browser-only source
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a /tmp/v075-src/. .
+          test -f browser_app/app/main.py
+          test -f browser_app/app/engine/hair_matcher.py
+          test ! -e launcher.py
+          test ! -e RUN_LEGACY.bat
+          test ! -e src
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q browser_app/app browser_app/tools
+          python -m pip install -q -r browser_app/requirements.txt pytest
+          python -m pytest browser_app/tests -q
+
+      - name: Commit clean browser baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Replace legacy desktop app with v0.75 browser FaceStudio"
+          git push origin HEAD:facestudio-v0.75-browser-baseline
