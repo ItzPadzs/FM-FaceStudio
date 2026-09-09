@@ -28,7 +28,7 @@ jobs:
           from pathlib import Path
 
           root = Path('.bootstrap')
-          expected = [root / f'v075.part{i:02d}' for i in range(14)]
+          expected = [root / f'v075x.part{i:02d}' for i in range(22)]
           missing = [str(p) for p in expected if not p.is_file()]
           if missing:
               raise SystemExit('Missing bootstrap parts: ' + ', '.join(missing))
