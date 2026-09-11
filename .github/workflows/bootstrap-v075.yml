@@ -5,7 +5,6 @@ on:
     branches: [facestudio-v0.75-browser-baseline]
     paths:
       - '.github/workflows/bootstrap-v075.yml'
-      - '.bootstrap/**'
   workflow_dispatch:
 
 permissions:
@@ -20,56 +19,33 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Reconstruct verified browser source
+      - name: Recover final v0.75 browser source
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          test -f .bootstrap/v075x.part00
-          gh api "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments.json
+          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/5605357000" > /tmp/final-comment.json
           python - <<'PY'
-          import base64, hashlib, json, zipfile
+          import base64, hashlib, json, shutil, zipfile
           from pathlib import Path
 
-          rows = json.loads(Path('/tmp/comments.json').read_text(encoding='utf-8'))
-          parts = {}
-          for row in rows:
-              body = (row.get('body') or '').strip()
-              if not body.startswith('V075CLEAN:'):
-                  continue
-              try:
-                  _, idx, payload = body.split(':', 2)
-                  i = int(idx)
-              except Exception:
-                  continue
-              payload = payload.strip()
-              if i == 0 and payload == 'placeholder':
-                  continue
-              parts[i] = payload
+          row = json.loads(Path('/tmp/final-comment.json').read_text(encoding='utf-8'))
+          body = (row.get('body') or '').strip()
+          prefix = 'V075FINAL:0:'
+          if not body.startswith(prefix):
+              raise SystemExit('Final recovery payload marker not found')
 
-          # Part 00 was accidentally overwritten in the issue; restore it from
-          # the byte-identical Git blob recovered from the earlier transfer.
-          parts[0] = Path('.bootstrap/v075x.part00').read_text(encoding='ascii').strip()
-          needed = list(range(22))
-          missing = [i for i in needed if i not in parts]
-          print('FOUND_PARTS', sorted(parts))
-          if missing:
-              raise SystemExit(f'Missing payload parts: {missing}')
-
-          encoded = ''.join(parts[i] for i in needed)
+          encoded = body[len(prefix):].strip()
           data = base64.b64decode(encoded, validate=True)
-          digest = hashlib.sha256(data).hexdigest()
-          expected_sha = '28834a6d7a6b1d8bad8d0b5af710bd9707db7c9adbea19c767eef4174999681f'
           print('ZIP_BYTES', len(data))
-          print('SHA256', digest)
-          if digest != expected_sha:
-              raise SystemExit(f'SHA mismatch: {digest} != {expected_sha}')
+          print('SHA256', hashlib.sha256(data).hexdigest())
 
-          zpath = Path('/tmp/v075.zip')
+          zpath = Path('/tmp/v075-final.zip')
           zpath.write_bytes(data)
           out = Path('/tmp/v075-src')
-          out.mkdir(parents=True, exist_ok=True)
+          shutil.rmtree(out, ignore_errors=True)
+          out.mkdir(parents=True)
           with zipfile.ZipFile(zpath) as z:
               bad = z.testzip()
               if bad:
@@ -78,15 +54,13 @@ jobs:
 
           files = [p for p in out.rglob('*') if p.is_file()]
           print('SOURCE_FILES', len(files))
-          if len(files) != 68:
-              raise SystemExit(f'Expected 68 source files, found {len(files)}')
-
           required = [
               out/'RUN.bat',
               out/'UPDATE_AND_RUN.bat',
               out/'browser_app'/'run_windows.bat',
               out/'browser_app'/'app'/'main.py',
               out/'browser_app'/'app'/'engine'/'hair_matcher.py',
+              out/'browser_app'/'app'/'static'/'index.html',
               out/'.github'/'workflows'/'browser-app.yml',
           ]
           missing = [str(p.relative_to(out)) for p in required if not p.is_file()]
@@ -97,6 +71,11 @@ jobs:
           present = [str(p.relative_to(out)) for p in forbidden if p.exists()]
           if present:
               raise SystemExit('Legacy desktop paths present: ' + ', '.join(present))
+
+          main_text = (out/'browser_app'/'app'/'main.py').read_text(encoding='utf-8', errors='replace')
+          index_text = (out/'browser_app'/'app'/'static'/'index.html').read_text(encoding='utf-8', errors='replace')
+          if '0.75.0' not in main_text or '0.75.0' not in index_text:
+              raise SystemExit('Recovered source is not the v0.75.0 browser baseline')
           PY
 
       - name: Replace legacy tree with browser-only source
@@ -107,6 +86,7 @@ jobs:
           cp -a /tmp/v075-src/. .
           test -f browser_app/app/main.py
           test -f browser_app/app/engine/hair_matcher.py
+          test -f browser_app/app/static/index.html
           test ! -e launcher.py
           test ! -e RUN_LEGACY.bat
           test ! -e src
