@@ -19,38 +19,44 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Recover complete v0.75 browser source
+      - name: Recover clean v0.75 browser source
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          for id in 5547356157 5547369053 5547387641 5547399618 5547412233; do
-            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" > "/tmp/${id}.json"
-          done
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/pages.json
           python - <<'PY'
           import base64, hashlib, json, shutil, zipfile
           from pathlib import Path
 
-          ids = [5547356157, 5547369053, 5547387641, 5547399618, 5547412233]
+          pages = json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
+          rows = [row for page in pages for row in page]
           parts = {}
-          for cid in ids:
-              row = json.loads(Path(f'/tmp/{cid}.json').read_text(encoding='utf-8'))
+          for row in rows:
               body = (row.get('body') or '').strip()
-              if not body.startswith('V075ZIP:'):
-                  raise SystemExit(f'Comment {cid} is not a V075ZIP payload')
-              _, idx, payload = body.split(':', 2)
-              parts[int(idx)] = payload.strip()
+              if body.startswith('V075CLEAN:'):
+                  try:
+                      _, idx, payload = body.split(':', 2)
+                      parts[int(idx)] = payload.strip()
+                  except Exception as e:
+                      raise SystemExit(f'Bad V075CLEAN comment {row.get("id")}: {e}')
 
-          expected = list(range(5))
+          print('CLEAN_INDICES', sorted(parts))
+          print('CLEAN_LENGTHS', {k: len(v) for k, v in sorted(parts.items())})
+          if not parts or min(parts) != 0:
+              raise SystemExit('V075CLEAN part 00 is missing')
+          expected = list(range(max(parts) + 1))
           if sorted(parts) != expected:
-              raise SystemExit(f'Expected V075ZIP parts {expected}, got {sorted(parts)}')
+              raise SystemExit(f'V075CLEAN sequence incomplete: expected {expected}, got {sorted(parts)}')
 
           encoded = ''.join(parts[i] for i in expected)
           data = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(data).hexdigest()
           print('ZIP_BYTES', len(data))
           print('SHA256', digest)
+          if not data.startswith(b'PK'):
+              raise SystemExit('Decoded V075CLEAN payload is not a ZIP file')
 
           zpath = Path('/tmp/v075.zip')
           zpath.write_bytes(data)
@@ -62,6 +68,11 @@ jobs:
               if bad:
                   raise SystemExit(f'Corrupt ZIP member: {bad}')
               z.extractall(out)
+
+          # Accept a single wrapper directory if the archive has one.
+          roots = [p for p in out.iterdir()]
+          if len(roots) == 1 and roots[0].is_dir() and not (out/'browser_app').exists():
+              out = roots[0]
 
           files = [p for p in out.rglob('*') if p.is_file()]
           print('SOURCE_FILES', len(files))
@@ -89,14 +100,16 @@ jobs:
               raise SystemExit('Recovered main.py is not v0.75.0')
           if '0.75.0' not in index_text and 'Hair Matcher' not in index_text:
               raise SystemExit('Recovered browser UI is not the v0.75 Hair Matcher baseline')
+          Path('/tmp/source-root.txt').write_text(str(out), encoding='utf-8')
           PY
 
       - name: Replace legacy tree with browser-only source
         shell: bash
         run: |
           set -euo pipefail
+          SRC="$(cat /tmp/source-root.txt)"
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/v075-src/. .
+          cp -a "$SRC"/. .
           test -f browser_app/app/main.py
           test -f browser_app/app/engine/hair_matcher.py
           test -f browser_app/app/static/index.html
