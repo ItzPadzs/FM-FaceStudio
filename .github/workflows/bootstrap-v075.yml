@@ -33,19 +33,25 @@ jobs:
           pages = json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
           rows = [row for page in pages for row in page]
           parts = {}
+          final0 = None
           for row in rows:
               body = (row.get('body') or '').strip()
               if body.startswith('V075CLEAN:'):
-                  try:
-                      _, idx, payload = body.split(':', 2)
-                      parts[int(idx)] = payload.strip()
-                  except Exception as e:
-                      raise SystemExit(f'Bad V075CLEAN comment {row.get("id")}: {e}')
+                  _, idx, payload = body.split(':', 2)
+                  parts[int(idx)] = payload.strip()
+              elif body.startswith('V075FINAL:0:'):
+                  final0 = body.split(':', 2)[2].strip()
 
-          print('CLEAN_INDICES', sorted(parts))
-          print('CLEAN_LENGTHS', {k: len(v) for k, v in sorted(parts.items())})
-          if not parts or min(parts) != 0:
-              raise SystemExit('V075CLEAN part 00 is missing')
+          print('CLEAN_INDICES_BEFORE', sorted(parts))
+          print('CLEAN_LENGTHS_BEFORE', {k: len(v) for k, v in sorted(parts.items())})
+          if 0 not in parts:
+              if not final0 or len(final0) < 20000 or 1 not in parts:
+                  raise SystemExit('Cannot recover V075CLEAN part 00 from staged final payload')
+              if final0[10000:20000] != parts[1]:
+                  raise SystemExit('V075FINAL overlap does not match V075CLEAN part 01')
+              parts[0] = final0[:10000]
+              print('Recovered V075CLEAN part 00 from verified V075FINAL overlap')
+
           expected = list(range(max(parts) + 1))
           if sorted(parts) != expected:
               raise SystemExit(f'V075CLEAN sequence incomplete: expected {expected}, got {sorted(parts)}')
@@ -53,6 +59,7 @@ jobs:
           encoded = ''.join(parts[i] for i in expected)
           data = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(data).hexdigest()
+          print('CLEAN_INDICES', sorted(parts))
           print('ZIP_BYTES', len(data))
           print('SHA256', digest)
           if not data.startswith(b'PK'):
@@ -69,7 +76,6 @@ jobs:
                   raise SystemExit(f'Corrupt ZIP member: {bad}')
               z.extractall(out)
 
-          # Accept a single wrapper directory if the archive has one.
           roots = [p for p in out.iterdir()]
           if len(roots) == 1 and roots[0].is_dir() and not (out/'browser_app').exists():
               out = roots[0]
