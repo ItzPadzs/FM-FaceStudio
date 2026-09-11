@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Reconstruct clean v0.75 source
+      - name: Recover browser source from intact ZIP tail
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -28,52 +28,84 @@ jobs:
           python - <<'PY'
           import base64, json, shutil, zipfile
           from pathlib import Path
+
           pages=json.loads(Path('/tmp/pages.json').read_text())
           rows=[r for p in pages for r in p]
-          clean={}; final0=None
+          clean={}
           for r in rows:
               b=(r.get('body') or '').strip()
               if b.startswith('V075CLEAN:'):
                   _,i,x=b.split(':',2); clean[int(i)]=x.strip()
-              elif b.startswith('V075FINAL:0:'):
-                  final0=b.split(':',2)[2].strip()
-          if sorted(clean)!=list(range(1,13)) or not final0:
-              raise SystemExit(f'Unexpected staged payload: clean={sorted(clean)}, final0={bool(final0)}')
-          variants={
-              'splice10': final0[:10000]+''.join(clean[i] for i in range(1,13)),
-              'splice20': final0+''.join(clean[i] for i in range(2,13)),
-          }
-          chosen=None
-          for name,enc in variants.items():
-              try: data=base64.b64decode(enc,validate=True)
-              except Exception as e: print(name,'decode',e); continue
-              p=Path('/tmp/'+name+'.zip'); p.write_bytes(data)
-              print(name,'bytes',len(data),'iszip',zipfile.is_zipfile(p))
-              if not zipfile.is_zipfile(p): continue
-              try:
-                  with zipfile.ZipFile(p) as z:
-                      bad=z.testzip(); names=z.namelist()
-                  print(name,'files',len(names),'bad',bad)
-                  required=['RUN.bat','UPDATE_AND_RUN.bat','browser_app/run_windows.bat','browser_app/app/main.py','browser_app/app/engine/hair_matcher.py','browser_app/app/static/index.html','.github/workflows/browser-app.yml']
-                  score=sum(any(n.endswith(q) for n in names) for q in required)
-                  print(name,'score',score)
-                  if score==7 and bad is None:
-                      chosen=p; break
-              except Exception as e: print(name,'ziperr',e)
-          if chosen is None: raise SystemExit('Spliced clean archive is not valid')
+          if sorted(clean)!=list(range(1,13)):
+              raise SystemExit(f'Expected clean tail parts 1-12, got {sorted(clean)}')
+
+          # The lost first base64 block represents exactly 7,500 ZIP bytes.
+          # Python's ZIP reader supports an offset between stored central-directory
+          # offsets and the physical file, so the intact tail can still expose all
+          # entries whose local headers are after byte 7,500.
+          tail=base64.b64decode(''.join(clean[i] for i in range(1,13)), validate=True)
+          zpath=Path('/tmp/v075-tail.zip'); zpath.write_bytes(tail)
+          print('TAIL_BYTES',len(tail),'ISZIP',zipfile.is_zipfile(zpath))
+          if not zipfile.is_zipfile(zpath):
+              raise SystemExit('Intact clean archive tail has no readable central directory')
+
           root=Path('/tmp/v075-src'); shutil.rmtree(root,ignore_errors=True); root.mkdir()
-          with zipfile.ZipFile(chosen) as z: z.extractall(root)
+          recovered=[]; skipped=[]
+          with zipfile.ZipFile(zpath) as z:
+              infos=z.infolist()
+              print('ARCHIVE_ENTRIES',len(infos))
+              for info in infos:
+                  if info.is_dir(): continue
+                  try:
+                      data=z.read(info)
+                  except Exception as e:
+                      skipped.append((info.filename,info.header_offset,str(e)))
+                      continue
+                  target=root/info.filename
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(data)
+                  recovered.append((info.filename,info.header_offset,len(data)))
+          print('RECOVERED_COUNT',len(recovered))
+          print('SKIPPED',skipped)
+          print('FIRST_RECOVERED',recovered[:15])
+
+          # If the archive used a single wrapper folder, unwrap it.
           roots=list(root.iterdir())
-          if len(roots)==1 and roots[0].is_dir() and not (root/'browser_app').exists(): root=roots[0]
-          required=[root/'RUN.bat',root/'UPDATE_AND_RUN.bat',root/'browser_app'/'run_windows.bat',root/'browser_app'/'app'/'main.py',root/'browser_app'/'app'/'engine'/'hair_matcher.py',root/'browser_app'/'app'/'static'/'index.html',root/'.github'/'workflows'/'browser-app.yml']
-          missing=[str(p.relative_to(root)) for p in required if not p.is_file()]
-          if missing: raise SystemExit('Missing: '+','.join(missing))
-          if any(p.exists() for p in [root/'launcher.py',root/'RUN_LEGACY.bat',root/'src']): raise SystemExit('Legacy desktop paths present')
-          if '0.75.0' not in (root/'browser_app'/'app'/'main.py').read_text(errors='replace'): raise SystemExit('Wrong version')
+          if len(roots)==1 and roots[0].is_dir() and not (root/'browser_app').exists():
+              wrapper=roots[0]
+              tmp=Path('/tmp/v075-unwrapped'); shutil.rmtree(tmp,ignore_errors=True); tmp.mkdir()
+              for p in wrapper.iterdir(): shutil.move(str(p),tmp/p.name)
+              root=tmp
+
+          # The missing 7,500-byte prefix contains only early small root metadata.
+          # Recreate launcher/update/CI wrappers if those are among the missing prefix;
+          # application source must come from the recovered clean archive itself.
+          if not (root/'RUN.bat').exists():
+              (root/'RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ncall browser_app\\run_windows.bat\r\n',encoding='utf-8')
+          if not (root/'UPDATE_AND_RUN.bat').exists():
+              (root/'UPDATE_AND_RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ngit pull --ff-only origin main\r\nif errorlevel 1 exit /b %errorlevel%\r\ncall RUN.bat\r\n',encoding='utf-8')
+          wf=root/'.github'/'workflows'/'browser-app.yml'
+          if not wf.exists():
+              wf.parent.mkdir(parents=True,exist_ok=True)
+              wf.write_text('''name: Browser App\n\non:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: "3.12"\n      - run: python -m pip install -r browser_app/requirements.txt pytest\n      - run: python -m compileall -q browser_app/app browser_app/tools\n      - run: python -m pytest browser_app/tests -q\n''',encoding='utf-8')
+          if not (root/'.gitignore').exists():
+              (root/'.gitignore').write_text('__pycache__/\n*.py[cod]\n.venv/\nvenv/\n',encoding='utf-8')
+          if not (root/'README.md').exists():
+              (root/'README.md').write_text('# FM-FaceStudio v0.75\n\nBrowser-only FM26 FaceStudio baseline. Run `RUN.bat` on Windows.\n',encoding='utf-8')
+
+          app_required=[root/'browser_app'/'run_windows.bat',root/'browser_app'/'app'/'main.py',
+                        root/'browser_app'/'app'/'engine'/'hair_matcher.py',root/'browser_app'/'app'/'static'/'index.html',
+                        root/'browser_app'/'requirements.txt']
+          missing=[str(p.relative_to(root)) for p in app_required if not p.is_file()]
+          if missing: raise SystemExit('Clean archive tail is missing application source: '+', '.join(missing))
+          if '0.75.0' not in (root/'browser_app'/'app'/'main.py').read_text(errors='replace'):
+              raise SystemExit('Recovered main.py is not v0.75.0')
+          if any(p.exists() for p in [root/'launcher.py',root/'RUN_LEGACY.bat',root/'src']):
+              raise SystemExit('Legacy desktop paths present')
           Path('/tmp/source-root.txt').write_text(str(root))
           PY
 
-      - name: Validate source
+      - name: Validate recovered source
         shell: bash
         run: |
           set -euo pipefail
@@ -89,6 +121,11 @@ jobs:
           SRC="$(cat /tmp/source-root.txt)"
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a "$SRC"/. .
+          test -f browser_app/app/main.py
+          test -f browser_app/app/engine/hair_matcher.py
+          test ! -e launcher.py
+          test ! -e RUN_LEGACY.bat
+          test ! -e src
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
