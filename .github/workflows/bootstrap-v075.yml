@@ -19,29 +19,40 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Recover final v0.75 browser source
+      - name: Recover complete v0.75 browser source
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/5605357000" > /tmp/final-comment.json
+          for id in 5547356157 5547369053 5547387641 5547399618 5547412233; do
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" > "/tmp/${id}.json"
+          done
           python - <<'PY'
           import base64, hashlib, json, shutil, zipfile
           from pathlib import Path
 
-          row = json.loads(Path('/tmp/final-comment.json').read_text(encoding='utf-8'))
-          body = (row.get('body') or '').strip()
-          prefix = 'V075FINAL:0:'
-          if not body.startswith(prefix):
-              raise SystemExit('Final recovery payload marker not found')
+          ids = [5547356157, 5547369053, 5547387641, 5547399618, 5547412233]
+          parts = {}
+          for cid in ids:
+              row = json.loads(Path(f'/tmp/{cid}.json').read_text(encoding='utf-8'))
+              body = (row.get('body') or '').strip()
+              if not body.startswith('V075ZIP:'):
+                  raise SystemExit(f'Comment {cid} is not a V075ZIP payload')
+              _, idx, payload = body.split(':', 2)
+              parts[int(idx)] = payload.strip()
 
-          encoded = body[len(prefix):].strip()
+          expected = list(range(5))
+          if sorted(parts) != expected:
+              raise SystemExit(f'Expected V075ZIP parts {expected}, got {sorted(parts)}')
+
+          encoded = ''.join(parts[i] for i in expected)
           data = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(data).hexdigest()
           print('ZIP_BYTES', len(data))
-          print('SHA256', hashlib.sha256(data).hexdigest())
+          print('SHA256', digest)
 
-          zpath = Path('/tmp/v075-final.zip')
+          zpath = Path('/tmp/v075.zip')
           zpath.write_bytes(data)
           out = Path('/tmp/v075-src')
           shutil.rmtree(out, ignore_errors=True)
@@ -74,8 +85,10 @@ jobs:
 
           main_text = (out/'browser_app'/'app'/'main.py').read_text(encoding='utf-8', errors='replace')
           index_text = (out/'browser_app'/'app'/'static'/'index.html').read_text(encoding='utf-8', errors='replace')
-          if '0.75.0' not in main_text or '0.75.0' not in index_text:
-              raise SystemExit('Recovered source is not the v0.75.0 browser baseline')
+          if '0.75.0' not in main_text:
+              raise SystemExit('Recovered main.py is not v0.75.0')
+          if '0.75.0' not in index_text and 'Hair Matcher' not in index_text:
+              raise SystemExit('Recovered browser UI is not the v0.75 Hair Matcher baseline')
           PY
 
       - name: Replace legacy tree with browser-only source
