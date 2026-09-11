@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: read
 
 jobs:
   migrate:
@@ -17,87 +18,77 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Locate v0.75 browser source in repository history
+      - name: Reconstruct clean v0.75 source
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/pages.json
           python - <<'PY'
-          import subprocess
+          import base64, json, shutil, zipfile
           from pathlib import Path
-
-          def run(*args):
-              return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-          refs=run('git','for-each-ref','--format=%(refname)','refs/remotes/origin').stdout.splitlines()
-          req=['RUN.bat','UPDATE_AND_RUN.bat','browser_app/run_windows.bat','browser_app/app/main.py',
-               'browser_app/app/engine/hair_matcher.py','browser_app/app/static/index.html',
-               '.github/workflows/browser-app.yml']
-          candidates=[]
-          for ref in refs:
-              if ref.endswith('/HEAD'): continue
-              ok=True
-              for p in req:
-                  if run('git','cat-file','-e',f'{ref}:{p}').returncode:
-                      ok=False; break
-              if not ok: continue
-              main=run('git','show',f'{ref}:browser_app/app/main.py').stdout
-              index=run('git','show',f'{ref}:browser_app/app/static/index.html').stdout
-              if '0.75.0' in main and ('0.75.0' in index or 'Hair Matcher' in index):
-                  candidates.append(ref)
-          print('V075_CANDIDATES',candidates)
-          if not candidates:
-              # Diagnostic: show refs containing a Hair Matcher implementation or v0.75 marker anywhere.
-              for ref in refs:
-                  if ref.endswith('/HEAD'): continue
-                  g=run('git','grep','-l','0.75.0',ref)
-                  if g.stdout.strip(): print('VERSION_HITS',ref,g.stdout[:4000])
-                  h=run('git','grep','-l','Hair Matcher',ref)
-                  if h.stdout.strip(): print('HAIR_HITS',ref,h.stdout[:4000])
-              raise SystemExit('No complete v0.75 browser source branch found')
-          # Prefer the dedicated browser feature branch, otherwise newest candidate by commit timestamp.
-          preferred=[r for r in candidates if r.endswith('/feature/hair-matcher-browser')]
-          if preferred:
-              ref=preferred[0]
-          else:
-              ref=max(candidates,key=lambda r:int(run('git','show','-s','--format=%ct',r).stdout.strip() or 0))
-          print('SELECTED_REF',ref)
-          Path('/tmp/source-ref.txt').write_text(ref)
+          pages=json.loads(Path('/tmp/pages.json').read_text())
+          rows=[r for p in pages for r in p]
+          clean={}; final0=None
+          for r in rows:
+              b=(r.get('body') or '').strip()
+              if b.startswith('V075CLEAN:'):
+                  _,i,x=b.split(':',2); clean[int(i)]=x.strip()
+              elif b.startswith('V075FINAL:0:'):
+                  final0=b.split(':',2)[2].strip()
+          if sorted(clean)!=list(range(1,13)) or not final0:
+              raise SystemExit(f'Unexpected staged payload: clean={sorted(clean)}, final0={bool(final0)}')
+          variants={
+              'splice10': final0[:10000]+''.join(clean[i] for i in range(1,13)),
+              'splice20': final0+''.join(clean[i] for i in range(2,13)),
+          }
+          chosen=None
+          for name,enc in variants.items():
+              try: data=base64.b64decode(enc,validate=True)
+              except Exception as e: print(name,'decode',e); continue
+              p=Path('/tmp/'+name+'.zip'); p.write_bytes(data)
+              print(name,'bytes',len(data),'iszip',zipfile.is_zipfile(p))
+              if not zipfile.is_zipfile(p): continue
+              try:
+                  with zipfile.ZipFile(p) as z:
+                      bad=z.testzip(); names=z.namelist()
+                  print(name,'files',len(names),'bad',bad)
+                  required=['RUN.bat','UPDATE_AND_RUN.bat','browser_app/run_windows.bat','browser_app/app/main.py','browser_app/app/engine/hair_matcher.py','browser_app/app/static/index.html','.github/workflows/browser-app.yml']
+                  score=sum(any(n.endswith(q) for n in names) for q in required)
+                  print(name,'score',score)
+                  if score==7 and bad is None:
+                      chosen=p; break
+              except Exception as e: print(name,'ziperr',e)
+          if chosen is None: raise SystemExit('Spliced clean archive is not valid')
+          root=Path('/tmp/v075-src'); shutil.rmtree(root,ignore_errors=True); root.mkdir()
+          with zipfile.ZipFile(chosen) as z: z.extractall(root)
+          roots=list(root.iterdir())
+          if len(roots)==1 and roots[0].is_dir() and not (root/'browser_app').exists(): root=roots[0]
+          required=[root/'RUN.bat',root/'UPDATE_AND_RUN.bat',root/'browser_app'/'run_windows.bat',root/'browser_app'/'app'/'main.py',root/'browser_app'/'app'/'engine'/'hair_matcher.py',root/'browser_app'/'app'/'static'/'index.html',root/'.github'/'workflows'/'browser-app.yml']
+          missing=[str(p.relative_to(root)) for p in required if not p.is_file()]
+          if missing: raise SystemExit('Missing: '+','.join(missing))
+          if any(p.exists() for p in [root/'launcher.py',root/'RUN_LEGACY.bat',root/'src']): raise SystemExit('Legacy desktop paths present')
+          if '0.75.0' not in (root/'browser_app'/'app'/'main.py').read_text(errors='replace'): raise SystemExit('Wrong version')
+          Path('/tmp/source-root.txt').write_text(str(root))
           PY
-
-      - name: Assemble clean browser-only tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          REF="$(cat /tmp/source-ref.txt)"
-          rm -rf /tmp/v075-src && mkdir -p /tmp/v075-src
-          paths=(RUN.bat UPDATE_AND_RUN.bat browser_app .github/workflows/browser-app.yml)
-          for p in .gitignore README.md; do
-            if git cat-file -e "$REF:$p" 2>/dev/null; then paths+=("$p"); fi
-          done
-          git archive "$REF" -- "${paths[@]}" | tar -x -C /tmp/v075-src
-          test -f /tmp/v075-src/browser_app/app/main.py
-          test -f /tmp/v075-src/browser_app/app/engine/hair_matcher.py
-          test -f /tmp/v075-src/browser_app/app/static/index.html
-          grep -q '0.75.0' /tmp/v075-src/browser_app/app/main.py
-          test ! -e /tmp/v075-src/launcher.py
-          test ! -e /tmp/v075-src/RUN_LEGACY.bat
-          test ! -e /tmp/v075-src/src
 
       - name: Validate source
         shell: bash
         run: |
           set -euo pipefail
-          cd /tmp/v075-src
+          cd "$(cat /tmp/source-root.txt)"
           python -m compileall -q browser_app/app browser_app/tools
           python -m pip install -q -r browser_app/requirements.txt pytest
           python -m pytest browser_app/tests -q
 
-      - name: Replace migration branch with clean browser baseline
+      - name: Replace migration branch
         shell: bash
         run: |
           set -euo pipefail
+          SRC="$(cat /tmp/source-root.txt)"
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/v075-src/. .
+          cp -a "$SRC"/. .
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
