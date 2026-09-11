@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  issues: read
 
 jobs:
   migrate:
@@ -20,20 +21,43 @@ jobs:
           fetch-depth: 0
 
       - name: Reconstruct verified browser source
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          test -f .bootstrap/v075x.part00
+          gh api "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/comments.json
           python - <<'PY'
-          import base64, hashlib, zipfile
+          import base64, hashlib, json, zipfile
           from pathlib import Path
 
-          root = Path('.bootstrap')
-          expected = [root / f'v075x.part{i:02d}' for i in range(22)]
-          missing = [str(p) for p in expected if not p.is_file()]
-          if missing:
-              raise SystemExit('Missing bootstrap parts: ' + ', '.join(missing))
+          rows = json.loads(Path('/tmp/comments.json').read_text(encoding='utf-8'))
+          parts = {}
+          for row in rows:
+              body = (row.get('body') or '').strip()
+              if not body.startswith('V075CLEAN:'):
+                  continue
+              try:
+                  _, idx, payload = body.split(':', 2)
+                  i = int(idx)
+              except Exception:
+                  continue
+              payload = payload.strip()
+              if i == 0 and payload == 'placeholder':
+                  continue
+              parts[i] = payload
 
-          encoded = ''.join(p.read_text(encoding='ascii').strip() for p in expected)
+          # Part 00 was accidentally overwritten in the issue; restore it from
+          # the byte-identical Git blob recovered from the earlier transfer.
+          parts[0] = Path('.bootstrap/v075x.part00').read_text(encoding='ascii').strip()
+          needed = list(range(22))
+          missing = [i for i in needed if i not in parts]
+          print('FOUND_PARTS', sorted(parts))
+          if missing:
+              raise SystemExit(f'Missing payload parts: {missing}')
+
+          encoded = ''.join(parts[i] for i in needed)
           data = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(data).hexdigest()
           expected_sha = '28834a6d7a6b1d8bad8d0b5af710bd9707db7c9adbea19c767eef4174999681f'
@@ -102,5 +126,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git diff --cached --check
           git commit -m "Replace legacy desktop app with v0.75 browser FaceStudio"
           git push origin HEAD:facestudio-v0.75-browser-baseline
