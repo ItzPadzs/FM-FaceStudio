@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Recover browser source from intact ZIP tail
+      - name: Recover v0.75 files from staged ZIP fragments
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -26,83 +26,154 @@ jobs:
           set -euo pipefail
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/pages.json
           python - <<'PY'
-          import base64, json, shutil, zipfile
-          from pathlib import Path
+          import base64, binascii, json, re, shutil, struct, zlib
+          from pathlib import Path, PurePosixPath
 
-          pages=json.loads(Path('/tmp/pages.json').read_text())
-          rows=[r for p in pages for r in p]
-          clean={}
-          for r in rows:
-              b=(r.get('body') or '').strip()
-              if b.startswith('V075CLEAN:'):
-                  _,i,x=b.split(':',2); clean[int(i)]=x.strip()
-          if sorted(clean)!=list(range(1,13)):
-              raise SystemExit(f'Expected clean tail parts 1-12, got {sorted(clean)}')
+          pages=json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
+          rows=[r for page in pages for r in page]
+          families={}
+          rx=re.compile(r'^(V075(?:ZIP|FINAL|CLEAN)):(\d+):(.*)$',re.S)
+          for row in rows:
+              m=rx.match((row.get('body') or '').strip())
+              if m:
+                  families.setdefault(m.group(1),{})[int(m.group(2))]=m.group(3).strip()
+          print('STAGED', {k:(sorted(v),{i:len(x) for i,x in sorted(v.items())}) for k,v in families.items()})
 
-          # The lost first base64 block represents exactly 7,500 ZIP bytes.
-          # Python's ZIP reader supports an offset between stored central-directory
-          # offsets and the physical file, so the intact tail can still expose all
-          # entries whose local headers are after byte 7,500.
-          tail=base64.b64decode(''.join(clean[i] for i in range(1,13)), validate=True)
-          zpath=Path('/tmp/v075-tail.zip'); zpath.write_bytes(tail)
-          print('TAIL_BYTES',len(tail),'ISZIP',zipfile.is_zipfile(zpath))
-          if not zipfile.is_zipfile(zpath):
-              raise SystemExit('Intact clean archive tail has no readable central directory')
-
-          root=Path('/tmp/v075-src'); shutil.rmtree(root,ignore_errors=True); root.mkdir()
-          recovered=[]; skipped=[]
-          with zipfile.ZipFile(zpath) as z:
-              infos=z.infolist()
-              print('ARCHIVE_ENTRIES',len(infos))
-              for info in infos:
-                  if info.is_dir(): continue
+          streams=[]
+          # Each staging family is useful even when its beginning/end is missing: ZIP local
+          # records are self-describing, so complete records inside a fragment can be restored.
+          for family,parts in families.items():
+              inds=sorted(parts)
+              groups=[]; cur=[]; prev=None
+              for i in inds:
+                  if prev is None or i==prev+1:
+                      cur.append(i)
+                  else:
+                      groups.append(cur); cur=[i]
+                  prev=i
+              if cur: groups.append(cur)
+              for group in groups:
+                  enc=''.join(parts[i] for i in group)
                   try:
-                      data=z.read(info)
+                      data=base64.b64decode(enc,validate=True)
                   except Exception as e:
-                      skipped.append((info.filename,info.header_offset,str(e)))
-                      continue
-                  target=root/info.filename
-                  target.parent.mkdir(parents=True,exist_ok=True)
-                  target.write_bytes(data)
-                  recovered.append((info.filename,info.header_offset,len(data)))
-          print('RECOVERED_COUNT',len(recovered))
-          print('SKIPPED',skipped)
-          print('FIRST_RECOVERED',recovered[:15])
+                      print('DECODE_FAIL',family,group,e); continue
+                  label=f'{family}[{group[0]}-{group[-1]}]'
+                  streams.append((label,data))
+                  print('STREAM',label,'bytes',len(data))
 
-          # If the archive used a single wrapper folder, unwrap it.
-          roots=list(root.iterdir())
-          if len(roots)==1 and roots[0].is_dir() and not (root/'browser_app').exists():
-              wrapper=roots[0]
-              tmp=Path('/tmp/v075-unwrapped'); shutil.rmtree(tmp,ignore_errors=True); tmp.mkdir()
-              for p in wrapper.iterdir(): shutil.move(str(p),tmp/p.name)
-              root=tmp
+          out=Path('/tmp/v075-src')
+          shutil.rmtree(out,ignore_errors=True); out.mkdir(parents=True)
+          recovered={}
 
-          # The missing 7,500-byte prefix contains only early small root metadata.
-          # Recreate launcher/update/CI wrappers if those are among the missing prefix;
-          # application source must come from the recovered clean archive itself.
-          if not (root/'RUN.bat').exists():
-              (root/'RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ncall browser_app\\run_windows.bat\r\n',encoding='utf-8')
-          if not (root/'UPDATE_AND_RUN.bat').exists():
-              (root/'UPDATE_AND_RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ngit pull --ff-only origin main\r\nif errorlevel 1 exit /b %errorlevel%\r\ncall RUN.bat\r\n',encoding='utf-8')
-          wf=root/'.github'/'workflows'/'browser-app.yml'
+          def normalise(name):
+              name=name.replace('\\','/').lstrip('/')
+              # Drop a single archive wrapper before these known repository roots.
+              for marker in ('browser_app/','.github/'):
+                  p=name.find(marker)
+                  if p>=0: return name[p:]
+              for rootname in ('RUN.bat','UPDATE_AND_RUN.bat','.gitignore','README.md'):
+                  if name==rootname or name.endswith('/'+rootname): return rootname
+              return name
+
+          def safe_target(name):
+              name=normalise(name)
+              p=PurePosixPath(name)
+              if not name or p.is_absolute() or '..' in p.parts: return None,None
+              return out.joinpath(*p.parts),name
+
+          def inflate(method,comp):
+              if method==0: return comp
+              if method==8: return zlib.decompress(comp,-15)
+              raise ValueError(f'unsupported compression method {method}')
+
+          def parse_stream(label,data):
+              pos=0; count=0; seen_offsets=set()
+              while True:
+                  sig=data.find(b'PK\x03\x04',pos)
+                  if sig<0: break
+                  if sig in seen_offsets: pos=sig+4; continue
+                  seen_offsets.add(sig)
+                  if sig+30>len(data): break
+                  try:
+                      (magic,ver,flags,method,mtime,mdate,crc,csize,usize,nlen,xlen)=struct.unpack_from('<4sHHHHHIIIHH',data,sig)
+                  except struct.error:
+                      break
+                  ns=sig+30; ne=ns+nlen; ds=ne+xlen
+                  if ds>len(data): pos=sig+4; continue
+                  rawname=data[ns:ne]
+                  try: name=rawname.decode('utf-8' if flags & 0x800 else 'cp437')
+                  except Exception: pos=sig+4; continue
+                  if name.endswith('/'):
+                      pos=ds; continue
+                  raw=None; consumed=None
+                  try:
+                      if not (flags & 0x08) and csize>=0:
+                          de=ds+csize
+                          if de>len(data):
+                              pos=sig+4; continue
+                          raw=inflate(method,data[ds:de]); consumed=de
+                      elif method==8:
+                          dec=zlib.decompressobj(-15)
+                          raw=dec.decompress(data[ds:])+dec.flush()
+                          if not dec.eof:
+                              pos=sig+4; continue
+                          comp_used=len(data[ds:])-len(dec.unused_data)
+                          consumed=ds+comp_used
+                      else:
+                          pos=sig+4; continue
+                  except Exception:
+                      pos=sig+4; continue
+                  if usize and len(raw)!=usize:
+                      pos=sig+4; continue
+                  if crc and (binascii.crc32(raw)&0xffffffff)!=crc:
+                      pos=sig+4; continue
+                  target,norm=safe_target(name)
+                  if target is None:
+                      pos=max(sig+4,consumed or sig+4); continue
+                  # Keep the longest valid copy if fragments overlap.
+                  old=recovered.get(norm)
+                  if old is None or len(raw)>=old[0]:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      target.write_bytes(raw)
+                      recovered[norm]=(len(raw),label,sig)
+                  count+=1
+                  pos=max(sig+4,consumed or sig+4)
+              print('PARSED',label,'complete_local_records',count)
+
+          for label,data in streams:
+              parse_stream(label,data)
+
+          print('RECOVERED_FILES',len(recovered))
+          for name,(size,label,offset) in sorted(recovered.items()):
+              print('RECOVERED',name,size,label,offset)
+
+          # Root wrappers are deterministic and tiny; rebuild them only if their ZIP
+          # records were in an unrecoverable fragment. Application code is never synthesized.
+          if not (out/'RUN.bat').exists():
+              (out/'RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ncall browser_app\\run_windows.bat\r\n',encoding='utf-8')
+          if not (out/'UPDATE_AND_RUN.bat').exists():
+              (out/'UPDATE_AND_RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ngit pull --ff-only origin main\r\nif errorlevel 1 exit /b %errorlevel%\r\ncall RUN.bat\r\n',encoding='utf-8')
+          wf=out/'.github'/'workflows'/'browser-app.yml'
           if not wf.exists():
               wf.parent.mkdir(parents=True,exist_ok=True)
               wf.write_text('''name: Browser App\n\non:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: "3.12"\n      - run: python -m pip install -r browser_app/requirements.txt pytest\n      - run: python -m compileall -q browser_app/app browser_app/tools\n      - run: python -m pytest browser_app/tests -q\n''',encoding='utf-8')
-          if not (root/'.gitignore').exists():
-              (root/'.gitignore').write_text('__pycache__/\n*.py[cod]\n.venv/\nvenv/\n',encoding='utf-8')
-          if not (root/'README.md').exists():
-              (root/'README.md').write_text('# FM-FaceStudio v0.75\n\nBrowser-only FM26 FaceStudio baseline. Run `RUN.bat` on Windows.\n',encoding='utf-8')
+          if not (out/'.gitignore').exists():
+              (out/'.gitignore').write_text('__pycache__/\n*.py[cod]\n.venv/\nvenv/\n',encoding='utf-8')
+          if not (out/'README.md').exists():
+              (out/'README.md').write_text('# FM-FaceStudio v0.75\n\nBrowser-only FM26 FaceStudio baseline. Run `RUN.bat` on Windows.\n',encoding='utf-8')
 
-          app_required=[root/'browser_app'/'run_windows.bat',root/'browser_app'/'app'/'main.py',
-                        root/'browser_app'/'app'/'engine'/'hair_matcher.py',root/'browser_app'/'app'/'static'/'index.html',
-                        root/'browser_app'/'requirements.txt']
-          missing=[str(p.relative_to(root)) for p in app_required if not p.is_file()]
-          if missing: raise SystemExit('Clean archive tail is missing application source: '+', '.join(missing))
-          if '0.75.0' not in (root/'browser_app'/'app'/'main.py').read_text(errors='replace'):
+          required=[out/'browser_app'/'run_windows.bat',out/'browser_app'/'requirements.txt',
+                    out/'browser_app'/'app'/'main.py',out/'browser_app'/'app'/'engine'/'hair_matcher.py',
+                    out/'browser_app'/'app'/'static'/'index.html']
+          missing=[str(p.relative_to(out)) for p in required if not p.is_file()]
+          if missing:
+              raise SystemExit('Missing recovered application files: '+', '.join(missing))
+          if '0.75.0' not in (out/'browser_app'/'app'/'main.py').read_text(encoding='utf-8',errors='replace'):
               raise SystemExit('Recovered main.py is not v0.75.0')
-          if any(p.exists() for p in [root/'launcher.py',root/'RUN_LEGACY.bat',root/'src']):
-              raise SystemExit('Legacy desktop paths present')
-          Path('/tmp/source-root.txt').write_text(str(root))
+          if any(p.exists() for p in (out/'launcher.py',out/'RUN_LEGACY.bat',out/'src')):
+              raise SystemExit('Legacy desktop paths present in recovery')
+          Path('/tmp/source-root.txt').write_text(str(out),encoding='utf-8')
           PY
 
       - name: Validate recovered source
