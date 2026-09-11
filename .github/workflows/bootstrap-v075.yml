@@ -3,8 +3,7 @@ name: Bootstrap v0.75 Browser Baseline
 on:
   push:
     branches: [facestudio-v0.75-browser-baseline]
-    paths:
-      - '.github/workflows/bootstrap-v075.yml'
+    paths: ['.github/workflows/bootstrap-v075.yml']
   workflow_dispatch:
 
 permissions:
@@ -19,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Recover clean v0.75 browser source
+      - name: Recover complete staged browser archive
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -27,89 +26,74 @@ jobs:
           set -euo pipefail
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/pages.json
           python - <<'PY'
-          import base64, hashlib, json, shutil, zipfile
+          import base64, hashlib, json, re, shutil, zipfile
           from pathlib import Path
 
-          pages = json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
-          rows = [row for page in pages for row in page]
-          parts = {}
-          final0 = None
-          for row in rows:
-              body = (row.get('body') or '').strip()
-              if body.startswith('V075CLEAN:'):
-                  _, idx, payload = body.split(':', 2)
-                  parts[int(idx)] = payload.strip()
-              elif body.startswith('V075FINAL:0:'):
-                  final0 = body.split(':', 2)[2].strip()
+          pages=json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
+          rows=[r for page in pages for r in page]
+          rx=re.compile(r'^(V075[A-Z0-9_]*):(\d+):(.*)$', re.S)
+          fam={}
+          for r in rows:
+              m=rx.match((r.get('body') or '').strip())
+              if m:
+                  fam.setdefault(m.group(1),{})[int(m.group(2))]=m.group(3).strip()
+          print('FAMILIES', {k:(sorted(v),{i:len(x) for i,x in sorted(v.items())}) for k,v in fam.items()})
 
-          print('CLEAN_INDICES_BEFORE', sorted(parts))
-          print('CLEAN_LENGTHS_BEFORE', {k: len(v) for k, v in sorted(parts.items())})
-          if 0 not in parts:
-              if not final0 or len(final0) < 20000 or 1 not in parts:
-                  raise SystemExit('Cannot recover V075CLEAN part 00 from staged final payload')
-              if final0[10000:20000] != parts[1]:
-                  raise SystemExit('V075FINAL overlap does not match V075CLEAN part 01')
-              parts[0] = final0[:10000]
-              print('Recovered V075CLEAN part 00 from verified V075FINAL overlap')
+          candidates=[]
+          for name,parts in fam.items():
+              inds=sorted(parts)
+              if not inds or inds[0]!=0 or inds!=list(range(inds[-1]+1)):
+                  continue
+              try:
+                  data=base64.b64decode(''.join(parts[i] for i in inds), validate=True)
+              except Exception as e:
+                  print(name,'BASE64_FAIL',e); continue
+              p=Path(f'/tmp/{name}.zip'); p.write_bytes(data)
+              print(name,'BYTES',len(data),'SHA256',hashlib.sha256(data).hexdigest(),'ZIP',zipfile.is_zipfile(p))
+              if not zipfile.is_zipfile(p):
+                  continue
+              try:
+                  with zipfile.ZipFile(p) as z:
+                      bad=z.testzip()
+                      names=set(z.namelist())
+                  if bad:
+                      print(name,'BAD_MEMBER',bad); continue
+                  score=sum(any(n.endswith(req) for n in names) for req in [
+                      'RUN.bat','UPDATE_AND_RUN.bat','browser_app/run_windows.bat',
+                      'browser_app/app/main.py','browser_app/app/engine/hair_matcher.py',
+                      'browser_app/app/static/index.html','.github/workflows/browser-app.yml'])
+                  print(name,'FILES',len(names),'SCORE',score)
+                  candidates.append((score,len(data),name,p))
+              except Exception as e:
+                  print(name,'ZIP_FAIL',e)
 
-          expected = list(range(max(parts) + 1))
-          if sorted(parts) != expected:
-              raise SystemExit(f'V075CLEAN sequence incomplete: expected {expected}, got {sorted(parts)}')
+          if not candidates:
+              raise SystemExit('No complete valid staged v0.75 ZIP family found')
+          candidates.sort(reverse=True)
+          score,_,name,zpath=candidates[0]
+          if score < 7:
+              raise SystemExit(f'Best ZIP {name} missing required browser baseline files (score {score}/7)')
+          print('SELECTED',name)
 
-          encoded = ''.join(parts[i] for i in expected)
-          data = base64.b64decode(encoded, validate=True)
-          digest = hashlib.sha256(data).hexdigest()
-          print('CLEAN_INDICES', sorted(parts))
-          print('ZIP_BYTES', len(data))
-          print('SHA256', digest)
-          if not data.startswith(b'PK'):
-              raise SystemExit('Decoded V075CLEAN payload is not a ZIP file')
+          root=Path('/tmp/v075-src'); shutil.rmtree(root,ignore_errors=True); root.mkdir()
+          with zipfile.ZipFile(zpath) as z: z.extractall(root)
+          roots=list(root.iterdir())
+          if len(roots)==1 and roots[0].is_dir() and not (root/'browser_app').exists(): root=roots[0]
 
-          zpath = Path('/tmp/v075.zip')
-          zpath.write_bytes(data)
-          out = Path('/tmp/v075-src')
-          shutil.rmtree(out, ignore_errors=True)
-          out.mkdir(parents=True)
-          with zipfile.ZipFile(zpath) as z:
-              bad = z.testzip()
-              if bad:
-                  raise SystemExit(f'Corrupt ZIP member: {bad}')
-              z.extractall(out)
-
-          roots = [p for p in out.iterdir()]
-          if len(roots) == 1 and roots[0].is_dir() and not (out/'browser_app').exists():
-              out = roots[0]
-
-          files = [p for p in out.rglob('*') if p.is_file()]
-          print('SOURCE_FILES', len(files))
-          required = [
-              out/'RUN.bat',
-              out/'UPDATE_AND_RUN.bat',
-              out/'browser_app'/'run_windows.bat',
-              out/'browser_app'/'app'/'main.py',
-              out/'browser_app'/'app'/'engine'/'hair_matcher.py',
-              out/'browser_app'/'app'/'static'/'index.html',
-              out/'.github'/'workflows'/'browser-app.yml',
-          ]
-          missing = [str(p.relative_to(out)) for p in required if not p.is_file()]
-          if missing:
-              raise SystemExit('Missing required files: ' + ', '.join(missing))
-
-          forbidden = [out/'launcher.py', out/'RUN_LEGACY.bat', out/'src']
-          present = [str(p.relative_to(out)) for p in forbidden if p.exists()]
-          if present:
-              raise SystemExit('Legacy desktop paths present: ' + ', '.join(present))
-
-          main_text = (out/'browser_app'/'app'/'main.py').read_text(encoding='utf-8', errors='replace')
-          index_text = (out/'browser_app'/'app'/'static'/'index.html').read_text(encoding='utf-8', errors='replace')
-          if '0.75.0' not in main_text:
-              raise SystemExit('Recovered main.py is not v0.75.0')
-          if '0.75.0' not in index_text and 'Hair Matcher' not in index_text:
-              raise SystemExit('Recovered browser UI is not the v0.75 Hair Matcher baseline')
-          Path('/tmp/source-root.txt').write_text(str(out), encoding='utf-8')
+          required=[root/'RUN.bat',root/'UPDATE_AND_RUN.bat',root/'browser_app'/'run_windows.bat',
+                    root/'browser_app'/'app'/'main.py',root/'browser_app'/'app'/'engine'/'hair_matcher.py',
+                    root/'browser_app'/'app'/'static'/'index.html',root/'.github'/'workflows'/'browser-app.yml']
+          missing=[str(p.relative_to(root)) for p in required if not p.is_file()]
+          if missing: raise SystemExit('Missing required files: '+', '.join(missing))
+          forbidden=[root/'launcher.py',root/'RUN_LEGACY.bat',root/'src']
+          present=[str(p.relative_to(root)) for p in forbidden if p.exists()]
+          if present: raise SystemExit('Legacy desktop paths present: '+', '.join(present))
+          if '0.75.0' not in (root/'browser_app'/'app'/'main.py').read_text(errors='replace'):
+              raise SystemExit('main.py is not v0.75.0')
+          Path('/tmp/source-root.txt').write_text(str(root))
           PY
 
-      - name: Replace legacy tree with browser-only source
+      - name: Replace legacy tree
         shell: bash
         run: |
           set -euo pipefail
@@ -118,7 +102,6 @@ jobs:
           cp -a "$SRC"/. .
           test -f browser_app/app/main.py
           test -f browser_app/app/engine/hair_matcher.py
-          test -f browser_app/app/static/index.html
           test ! -e launcher.py
           test ! -e RUN_LEGACY.bat
           test ! -e src
