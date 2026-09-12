@@ -1,4 +1,4 @@
-name: Bootstrap v0.75 Browser Baseline
+name: Recover v0.75 Browser Baseline
 
 on:
   push:
@@ -14,11 +14,12 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout migration branch
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Recover v0.75 files from staged ZIP fragments
+      - name: Reconstruct clean v0.75 archive from recovery issue
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -26,180 +27,139 @@ jobs:
           set -euo pipefail
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" > /tmp/pages.json
           python - <<'PY'
-          import base64, binascii, json, re, shutil, struct, zlib
+          import base64
+          import hashlib
+          import json
+          import re
+          import shutil
+          import zipfile
           from pathlib import Path, PurePosixPath
 
-          pages=json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
-          rows=[r for page in pages for r in page]
-          families={}
-          rx=re.compile(r'^(V075(?:ZIP|FINAL|CLEAN)):(\d+):(.*)$',re.S)
+          pages = json.loads(Path('/tmp/pages.json').read_text(encoding='utf-8'))
+          rows = [row for page in pages for row in page]
+
+          parts = {}
           for row in rows:
-              m=rx.match((row.get('body') or '').strip())
+              body = (row.get('body') or '').strip()
+              m = re.match(r'^V075FINAL:0:(.*)$', body, re.S)
               if m:
-                  families.setdefault(m.group(1),{})[int(m.group(2))]=m.group(3).strip()
-          print('STAGED', {k:(sorted(v),{i:len(x) for i,x in sorted(v.items())}) for k,v in families.items()})
+                  parts[0] = m.group(1).strip()
+              m = re.match(r'^V075CLEAN:(\d+):(.*)$', body, re.S)
+              if m:
+                  index = int(m.group(1))
+                  if index != 0:
+                      parts[index] = m.group(2).strip()
 
-          streams=[]
-          # Each staging family is useful even when its beginning/end is missing: ZIP local
-          # records are self-describing, so complete records inside a fragment can be restored.
-          for family,parts in families.items():
-              inds=sorted(parts)
-              groups=[]; cur=[]; prev=None
-              for i in inds:
-                  if prev is None or i==prev+1:
-                      cur.append(i)
-                  else:
-                      groups.append(cur); cur=[i]
-                  prev=i
-              if cur: groups.append(cur)
-              for group in groups:
-                  enc=''.join(parts[i] for i in group)
-                  try:
-                      data=base64.b64decode(enc,validate=True)
-                  except Exception as e:
-                      print('DECODE_FAIL',family,group,e); continue
-                  label=f'{family}[{group[0]}-{group[-1]}]'
-                  streams.append((label,data))
-                  print('STREAM',label,'bytes',len(data))
-
-          out=Path('/tmp/v075-src')
-          shutil.rmtree(out,ignore_errors=True); out.mkdir(parents=True)
-          recovered={}
-
-          def normalise(name):
-              name=name.replace('\\','/').lstrip('/')
-              # Drop a single archive wrapper before these known repository roots.
-              for marker in ('browser_app/','.github/'):
-                  p=name.find(marker)
-                  if p>=0: return name[p:]
-              for rootname in ('RUN.bat','UPDATE_AND_RUN.bat','.gitignore','README.md'):
-                  if name==rootname or name.endswith('/'+rootname): return rootname
-              return name
-
-          def safe_target(name):
-              name=normalise(name)
-              p=PurePosixPath(name)
-              if not name or p.is_absolute() or '..' in p.parts: return None,None
-              return out.joinpath(*p.parts),name
-
-          def inflate(method,comp):
-              if method==0: return comp
-              if method==8: return zlib.decompress(comp,-15)
-              raise ValueError(f'unsupported compression method {method}')
-
-          def parse_stream(label,data):
-              pos=0; count=0; seen_offsets=set()
-              while True:
-                  sig=data.find(b'PK\x03\x04',pos)
-                  if sig<0: break
-                  if sig in seen_offsets: pos=sig+4; continue
-                  seen_offsets.add(sig)
-                  if sig+30>len(data): break
-                  try:
-                      (magic,ver,flags,method,mtime,mdate,crc,csize,usize,nlen,xlen)=struct.unpack_from('<4sHHHHHIIIHH',data,sig)
-                  except struct.error:
-                      break
-                  ns=sig+30; ne=ns+nlen; ds=ne+xlen
-                  if ds>len(data): pos=sig+4; continue
-                  rawname=data[ns:ne]
-                  try: name=rawname.decode('utf-8' if flags & 0x800 else 'cp437')
-                  except Exception: pos=sig+4; continue
-                  if name.endswith('/'):
-                      pos=ds; continue
-                  raw=None; consumed=None
-                  try:
-                      if not (flags & 0x08) and csize>=0:
-                          de=ds+csize
-                          if de>len(data):
-                              pos=sig+4; continue
-                          raw=inflate(method,data[ds:de]); consumed=de
-                      elif method==8:
-                          dec=zlib.decompressobj(-15)
-                          raw=dec.decompress(data[ds:])+dec.flush()
-                          if not dec.eof:
-                              pos=sig+4; continue
-                          comp_used=len(data[ds:])-len(dec.unused_data)
-                          consumed=ds+comp_used
-                      else:
-                          pos=sig+4; continue
-                  except Exception:
-                      pos=sig+4; continue
-                  if usize and len(raw)!=usize:
-                      pos=sig+4; continue
-                  if crc and (binascii.crc32(raw)&0xffffffff)!=crc:
-                      pos=sig+4; continue
-                  target,norm=safe_target(name)
-                  if target is None:
-                      pos=max(sig+4,consumed or sig+4); continue
-                  # Keep the longest valid copy if fragments overlap.
-                  old=recovered.get(norm)
-                  if old is None or len(raw)>=old[0]:
-                      target.parent.mkdir(parents=True,exist_ok=True)
-                      target.write_bytes(raw)
-                      recovered[norm]=(len(raw),label,sig)
-                  count+=1
-                  pos=max(sig+4,consumed or sig+4)
-              print('PARSED',label,'complete_local_records',count)
-
-          for label,data in streams:
-              parse_stream(label,data)
-
-          print('RECOVERED_FILES',len(recovered))
-          for name,(size,label,offset) in sorted(recovered.items()):
-              print('RECOVERED',name,size,label,offset)
-
-          # Root wrappers are deterministic and tiny; rebuild them only if their ZIP
-          # records were in an unrecoverable fragment. Application code is never synthesized.
-          if not (out/'RUN.bat').exists():
-              (out/'RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ncall browser_app\\run_windows.bat\r\n',encoding='utf-8')
-          if not (out/'UPDATE_AND_RUN.bat').exists():
-              (out/'UPDATE_AND_RUN.bat').write_text('@echo off\r\ncd /d "%~dp0"\r\ngit pull --ff-only origin main\r\nif errorlevel 1 exit /b %errorlevel%\r\ncall RUN.bat\r\n',encoding='utf-8')
-          wf=out/'.github'/'workflows'/'browser-app.yml'
-          if not wf.exists():
-              wf.parent.mkdir(parents=True,exist_ok=True)
-              wf.write_text('''name: Browser App\n\non:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: "3.12"\n      - run: python -m pip install -r browser_app/requirements.txt pytest\n      - run: python -m compileall -q browser_app/app browser_app/tools\n      - run: python -m pytest browser_app/tests -q\n''',encoding='utf-8')
-          if not (out/'.gitignore').exists():
-              (out/'.gitignore').write_text('__pycache__/\n*.py[cod]\n.venv/\nvenv/\n',encoding='utf-8')
-          if not (out/'README.md').exists():
-              (out/'README.md').write_text('# FM-FaceStudio v0.75\n\nBrowser-only FM26 FaceStudio baseline. Run `RUN.bat` on Windows.\n',encoding='utf-8')
-
-          required=[out/'browser_app'/'run_windows.bat',out/'browser_app'/'requirements.txt',
-                    out/'browser_app'/'app'/'main.py',out/'browser_app'/'app'/'engine'/'hair_matcher.py',
-                    out/'browser_app'/'app'/'static'/'index.html']
-          missing=[str(p.relative_to(out)) for p in required if not p.is_file()]
+          expected = list(range(13))
+          missing = [i for i in expected if i not in parts]
+          unexpected = sorted(i for i in parts if i not in expected)
           if missing:
-              raise SystemExit('Missing recovered application files: '+', '.join(missing))
-          if '0.75.0' not in (out/'browser_app'/'app'/'main.py').read_text(encoding='utf-8',errors='replace'):
-              raise SystemExit('Recovered main.py is not v0.75.0')
-          if any(p.exists() for p in (out/'launcher.py',out/'RUN_LEGACY.bat',out/'src')):
-              raise SystemExit('Legacy desktop paths present in recovery')
-          Path('/tmp/source-root.txt').write_text(str(out),encoding='utf-8')
+              raise SystemExit(f'Missing v0.75 archive chunks: {missing}')
+          if unexpected:
+              raise SystemExit(f'Unexpected v0.75 archive chunks: {unexpected}')
+
+          encoded = ''.join(parts[i] for i in expected)
+          archive = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(archive).hexdigest()
+          print('ARCHIVE_BYTES', len(archive))
+          print('ARCHIVE_SHA256', digest)
+          if len(archive) != 259658:
+              raise SystemExit(f'Unexpected archive size: {len(archive)} (expected 259658)')
+
+          zip_path = Path('/tmp/FM-FaceStudio-v0.75-clean-github-v2.zip')
+          zip_path.write_bytes(archive)
+          source = Path('/tmp/v075-source')
+          shutil.rmtree(source, ignore_errors=True)
+          source.mkdir(parents=True)
+
+          with zipfile.ZipFile(zip_path) as zf:
+              bad = zf.testzip()
+              if bad:
+                  raise SystemExit(f'Corrupt ZIP member: {bad}')
+              for info in zf.infolist():
+                  raw = info.filename.replace('\\', '/').lstrip('/')
+                  p = PurePosixPath(raw)
+                  if p.is_absolute() or '..' in p.parts:
+                      raise SystemExit(f'Unsafe ZIP path: {info.filename}')
+              zf.extractall(source)
+
+          # Accept a single wrapper directory, but never guess beyond that.
+          children = [p for p in source.iterdir() if p.name != '__MACOSX']
+          if len(children) == 1 and children[0].is_dir() and not (source / 'browser_app').exists():
+              root = children[0]
+          else:
+              root = source
+
+          required = [
+              root / 'RUN.bat',
+              root / 'UPDATE_AND_RUN.bat',
+              root / '.github' / 'workflows' / 'browser-app.yml',
+              root / 'browser_app' / 'run_windows.bat',
+              root / 'browser_app' / 'requirements.txt',
+              root / 'browser_app' / 'app' / 'main.py',
+              root / 'browser_app' / 'app' / 'engine' / 'hair_matcher.py',
+              root / 'browser_app' / 'app' / 'static' / 'index.html',
+          ]
+          missing_files = [str(p.relative_to(root)) for p in required if not p.is_file()]
+          if missing_files:
+              raise SystemExit('Archive is missing required files: ' + ', '.join(missing_files))
+
+          main_text = (root / 'browser_app' / 'app' / 'main.py').read_text(encoding='utf-8', errors='replace')
+          html_text = (root / 'browser_app' / 'app' / 'static' / 'index.html').read_text(encoding='utf-8', errors='replace')
+          if '0.75.0' not in main_text:
+              raise SystemExit('main.py is not v0.75.0')
+          if 'v0.75.0' not in html_text:
+              raise SystemExit('index.html is not v0.75.0')
+
+          forbidden = [
+              'RUN_LEGACY.bat', 'launcher.py', 'src', 'templates', 'pyproject.toml',
+              'INSTALL_AND_OPEN.bat', 'bridge', 'data', 'docs', 'examples',
+              'facestudio-donor-2002042595.json',
+              'facestudio-fm-head-geometry.json',
+              'facestudio-landmarks.json', '.bootstrap'
+          ]
+          present = [name for name in forbidden if (root / name).exists()]
+          if present:
+              raise SystemExit('Clean archive still contains legacy root paths: ' + ', '.join(present))
+
+          Path('/tmp/source-root.txt').write_text(str(root), encoding='utf-8')
           PY
 
-      - name: Validate recovered source
+      - name: Validate v0.75 source
         shell: bash
         run: |
           set -euo pipefail
-          cd "$(cat /tmp/source-root.txt)"
-          python -m compileall -q browser_app/app browser_app/tools
-          python -m pip install -q -r browser_app/requirements.txt pytest
-          python -m pytest browser_app/tests -q
+          SRC="$(cat /tmp/source-root.txt)"
+          cd "$SRC/browser_app"
+          python -m pip install -q -r requirements.txt pytest
+          python -m compileall -q app tools
+          python -m pytest tests -q
 
-      - name: Replace migration branch
+      - name: Replace legacy repository with browser v0.75
         shell: bash
         run: |
           set -euo pipefail
           SRC="$(cat /tmp/source-root.txt)"
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a "$SRC"/. .
+          rm -rf .bootstrap
+
           test -f browser_app/app/main.py
           test -f browser_app/app/engine/hair_matcher.py
+          test -f browser_app/app/static/index.html
           test ! -e launcher.py
           test ! -e RUN_LEGACY.bat
           test ! -e src
+          test ! -e bridge
+          test ! -e data
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'Repository already matches clean v0.75 baseline.'
+            exit 0
+          fi
           git commit -m "Replace legacy desktop app with v0.75 browser FaceStudio"
           git push origin HEAD:facestudio-v0.75-browser-baseline
