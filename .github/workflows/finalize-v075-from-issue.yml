@@ -1,89 +1,48 @@
-name: Finalize v0.75 Browser Baseline
+name: Bootstrap v0.75 Browser Baseline
 
 on:
   push:
     branches:
       - facestudio-v0.75-browser-baseline
     paths:
-      - '.bootstrap/finalize-v075-now.txt'
+      - '.bootstrap/v075_publish16/**'
 
 permissions:
   contents: write
-  issues: read
 
 jobs:
-  finalize:
+  migrate:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout migration branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Reconstruct clean v0.75 package
+      - name: Rebuild and validate clean browser source
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/v075 /tmp/v075.zip /tmp/bodies.txt
+          shopt -s nullglob
+          parts=(.bootstrap/v075_publish16/*.b64)
+          if [ "${#parts[@]}" -ne 16 ]; then
+            echo "Waiting for all 16 verified chunks; currently have ${#parts[@]}."
+            exit 0
+          fi
+          cat .bootstrap/v075_publish16/*.b64 | base64 --decode > /tmp/v075.tar.xz
+          rm -rf /tmp/v075
           mkdir -p /tmp/v075
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/69/comments?per_page=100" --jq '.[] | .body' > /tmp/bodies.txt
-          python - <<'PY'
-          from pathlib import Path
-          import base64, hashlib, re, zipfile
-          chunks = {}
-          for line in Path('/tmp/bodies.txt').read_text(encoding='utf-8').splitlines():
-              m = re.fullmatch(r'V075FINAL:(\d+):(.*)', line.strip())
-              if not m:
-                  continue
-              i = int(m.group(1))
-              payload = m.group(2).strip()
-              if i in chunks and chunks[i] != payload:
-                  raise SystemExit(f'Conflicting V075FINAL chunk {i}')
-              chunks[i] = payload
-          expected = [0]
-          if sorted(chunks) != expected:
-              raise SystemExit(f'Expected V075FINAL chunks {expected}; found {sorted(chunks)}')
-          raw = base64.b64decode(chunks[0], validate=True)
-          archive = Path('/tmp/v075.zip')
-          archive.write_bytes(raw)
-          print(f'Reconstructed {len(chunks)} chunk, {len(raw)} bytes, sha256={hashlib.sha256(raw).hexdigest()}')
-          if not zipfile.is_zipfile(archive):
-              raise SystemExit('Recovered V075FINAL payload is not a ZIP archive')
-          target = Path('/tmp/v075').resolve()
-          with zipfile.ZipFile(archive) as zf:
-              for member in zf.infolist():
-                  destination = (target / member.filename).resolve()
-                  if destination != target and target not in destination.parents:
-                      raise SystemExit(f'Unsafe ZIP path: {member.filename}')
-              zf.extractall(target)
-          PY
+          tar -xJf /tmp/v075.tar.xz -C /tmp/v075
 
-      - name: Validate exact browser source
-        shell: bash
-        run: |
-          set -euo pipefail
-          MAIN_FILE="$(find /tmp/v075 -type f -path '*/browser_app/app/main.py' -print -quit)"
-          test -n "$MAIN_FILE"
-          SRC="$(dirname "$(dirname "$(dirname "$MAIN_FILE")")")"
-          echo "SOURCE_ROOT=$SRC" >> "$GITHUB_ENV"
-          test -f "$SRC/RUN.bat"
-          test -f "$SRC/UPDATE_AND_RUN.bat"
-          test -f "$SRC/browser_app/run_windows.bat"
-          test -f "$SRC/browser_app/app/main.py"
-          test -f "$SRC/browser_app/app/static/index.html"
-          grep -q '0.75.0' "$SRC/browser_app/app/main.py"
-          grep -q 'v0.75.0' "$SRC/browser_app/app/static/index.html"
-          grep -q 'Hair Matcher' "$SRC/browser_app/app/static/index.html"
-          FILE_COUNT="$(find "$SRC" -type f | wc -l | tr -d ' ')"
+          FILE_COUNT="$(find /tmp/v075 -type f | wc -l | tr -d ' ')"
           test "$FILE_COUNT" = "68"
-          python - "$SRC" <<'PY'
+
+          python - /tmp/v075 <<'PY'
           from pathlib import Path
           import hashlib, sys
           root = Path(sys.argv[1])
-          h = hashlib.sha256()
           files = sorted(p for p in root.rglob('*') if p.is_file())
+          h = hashlib.sha256()
           for p in files:
               rel = p.relative_to(root).as_posix()
               fh = hashlib.sha256(p.read_bytes()).hexdigest()
@@ -98,12 +57,24 @@ jobs:
               raise SystemExit(f'Clean-source tree mismatch: expected {expected}, got {digest}')
           PY
 
+          test -f /tmp/v075/RUN.bat
+          test -f /tmp/v075/UPDATE_AND_RUN.bat
+          test -f /tmp/v075/browser_app/run_windows.bat
+          test -f /tmp/v075/browser_app/app/main.py
+          test -f /tmp/v075/browser_app/app/static/index.html
+          grep -q '0.75.0' /tmp/v075/browser_app/app/main.py
+          grep -q 'v0.75.0' /tmp/v075/browser_app/app/static/index.html
+          grep -q 'Hair Matcher' /tmp/v075/browser_app/app/static/index.html
+          for obsolete in RUN_LEGACY.bat launcher.py src templates pyproject.toml INSTALL_AND_OPEN.bat bridge data docs examples; do
+            test ! -e "/tmp/v075/$obsolete"
+          done
+
       - name: Run browser application tests
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -q pytest -r "$SOURCE_ROOT/browser_app/requirements.txt"
-          cd "$SOURCE_ROOT/browser_app"
+          python -m pip install --disable-pip-version-check -q pytest -r /tmp/v075/browser_app/requirements.txt
+          cd /tmp/v075/browser_app
           python -m pytest tests -q
 
       - name: Replace legacy repository contents
@@ -111,22 +82,14 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a "$SOURCE_ROOT"/. .
-          test -f RUN.bat
-          test -f UPDATE_AND_RUN.bat
-          test -d browser_app
-          test ! -e .bootstrap
-          test ! -e launcher.py
-          test ! -e src
-          test ! -e bridge
-          test ! -e data
-          test ! -e docs
-          test ! -e examples
-          test ! -e INSTALL_AND_OPEN.bat
-          test ! -e RUN_LEGACY.bat
+          cp -a /tmp/v075/. .
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "Repository already matches clean v0.75 browser baseline."
+            exit 0
+          fi
           git commit -m "Replace legacy desktop app with v0.75 browser FaceStudio"
           git push origin HEAD:facestudio-v0.75-browser-baseline
