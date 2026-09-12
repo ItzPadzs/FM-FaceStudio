@@ -35,30 +35,27 @@ jobs:
 
           chunks = {}
           for line in Path('/tmp/bodies.txt').read_text(encoding='utf-8').splitlines():
-              match = re.fullmatch(r'V075CLEAN:(\d+):(.*)', line.strip())
+              match = re.fullmatch(r'V075ZIP:(\d+):(.*)', line.strip())
               if not match:
                   continue
               index = int(match.group(1))
               payload = match.group(2).strip()
               if index in chunks and chunks[index] != payload:
-                  raise SystemExit(f'Conflicting V075CLEAN chunk {index}')
+                  raise SystemExit(f'Conflicting V075ZIP chunk {index}')
               chunks[index] = payload
 
-          if 0 not in chunks:
-              raise SystemExit('V075CLEAN chunk 0 is missing')
-          last = max(chunks)
-          expected = list(range(last + 1))
-          missing = [i for i in expected if i not in chunks]
-          if missing:
-              raise SystemExit(f'Missing V075CLEAN chunks: {missing}')
+          expected = list(range(5))
+          if sorted(chunks) != expected:
+              raise SystemExit(f'Expected V075ZIP chunks {expected}; found {sorted(chunks)}')
 
           joined = ''.join(chunks[i] for i in expected)
           raw = base64.b64decode(joined, validate=True)
           archive = Path('/tmp/v075.zip')
           archive.write_bytes(raw)
-          print(f'Reconstructed {len(chunks)} chunks, {len(raw)} bytes, sha256={hashlib.sha256(raw).hexdigest()}')
+          digest = hashlib.sha256(raw).hexdigest()
+          print(f'Reconstructed {len(chunks)} chunks, {len(raw)} bytes, sha256={digest}')
           if not zipfile.is_zipfile(archive):
-              raise SystemExit('Recovered V075CLEAN payload is not a ZIP archive')
+              raise SystemExit('Recovered V075ZIP payload is not a ZIP archive')
 
           target = Path('/tmp/v075').resolve()
           with zipfile.ZipFile(archive) as zf:
@@ -95,6 +92,82 @@ jobs:
             fi
           done
 
+          FILE_COUNT="$(find "$SRC" -type f | wc -l | tr -d ' ')"
+          test "$FILE_COUNT" = "68"
+
+          cd "$SRC"
+          cat > /tmp/v075.sha256 <<'EOF'
+7708fbf7841f7d522ac38e2bb8219b815bc08d8887d50a74eedc92c870f261be  ./.github/workflows/browser-app.yml
+77f4745ab971a61275d88d401a077899a7bdc288a9aa6a68243c524d9b8a5187  ./.gitignore
+5e1228872d91ca86414cbae4f77bc6f6c4b3ec3f8eeb13d16a8637ff54e09083  ./README.md
+cfac05e74c6c0bdffac627b0199f4e415ea2f1ff2e792b4c61cd6ddbf0925a37  ./RUN.bat
+e5dfd56e09951483aed649fcebfcc080e92695d5e8c29b3bd090de8ee518b40d  ./UPDATE_AND_RUN.bat
+1baffaf59e76208d711d60d744fe62b2efef68aa304ae514b0594ce1f45b5de6  ./browser_app/HEAD_DRAWER_QUICK_START.txt
+5e20a71b5e74c7c694d2edde4a7c0423f0b6660819ba59fb876db34b0cd57f48  ./browser_app/README.md
+c8c1a00255f59b7a197af961bf8a4ab6ebe136c99cb136449c57adc60c9372f8  ./browser_app/SETUP_FC_BRIDGE.bat
+74d425095400365e04a3d3cb92fb85350df1e2f903d0172c1f2e99b3ffc3bc3b  ./browser_app/SETUP_NATIVE_HAIR.bat
+3ae984bee14baeefc82161ac0898ec2a0faf529d7ed52db0d8be00af10a5f46b  ./browser_app/SETUP_REFERENCE_HEADS.bat
+a765ef77ad74b21de0a1d4b6b372a90422806dfc309c4b3e987d10eb0408e4b1  ./browser_app/app/__init__.py
+610ffc94cff29872a6ecf2c855f3c1dceed34b093c728c678634f9e2a6863d74  ./browser_app/app/engine/__init__.py
+b9a422d721261aa0a28a8609e76d37b0780e769bd96b447e181157601d2dab24  ./browser_app/app/engine/adaptive_profile.py
+e0806afff01f83609897e9cb9781048756d8301bfeee1fe53dc41fcb5b5681e7  ./browser_app/app/engine/archive.py
+4b7857face1abbef3e76dad9cb180beca05702d9a5e61324685697f84e835d78  ./browser_app/app/engine/converter.py
+0e99d9769dd1f01daf6b7247ece8f356f459d7d9b7b37d8c4d4faf49cd59060d  ./browser_app/app/engine/donor_selector.py
+f32a9fc5942545ce09c03a31722909b78b979f59937d9b1182adb801e86af036  ./browser_app/app/engine/fc_bridge.py
+04b1ba8184826e1a3035fb07bd9841fb15d3f24a2c06140fbfb56ac742dbe5c9  ./browser_app/app/engine/fm26_skin.py
+a83cf297fbbb6f927019e4159c54b6d5d5fdfd3bfd6c803fdfa4fbcbc720b714  ./browser_app/app/engine/fmdl.py
+156c488465e0d05b70ee7988e473cc20e2e7d8e5ef8c47e1fb494814bdbc8dda  ./browser_app/app/engine/fmdl_calibrated.py
+b94225193f6a9798d7b14c19ae5a418f955808c0d28058956e673a02fea7f22f  ./browser_app/app/engine/fmdl_headshell.py
+db34fcb671e4fabca356d8f17b5f60148636fda09bd3d9f42fb0a10435185eb2  ./browser_app/app/engine/fmdl_transfer.py
+b7213428f85219655d6113e76f723022c2b24ac002d6c3de396fc4ebf2d5c5d8  ./browser_app/app/engine/fmdl_uv.py
+ea92813219eac0fa7c54e81d13f65d19a5cd0de2f2de2ebb2688f09e0cbcbdb3  ./browser_app/app/engine/ftex.py
+3403b7b7a760e8df6207ea151d6d88626ac2e0aaa3254aeb0df6b4faac7fb3ba  ./browser_app/app/engine/geometry.py
+2824b87a044afff6c02aca5106eeedf607123b3b5268982cc760081baf70eabc  ./browser_app/app/engine/hair_matcher.py
+8a0e107d8ca273befd854be87a9c39b421061ffaad9d71c3cc544fa65ac3bc5b  ./browser_app/app/engine/headhunter_contract.py
+de30256df88e9ee00070e5f0b0e5ec311a10eed1513690dc43b21a9cf8214a6b  ./browser_app/app/engine/identity_texture.py
+97decd5268b2d206d8d9af5451f79cc37731ab1dba8bf50165964976b58075e9  ./browser_app/app/engine/identity_transfer.py
+a95b9880dad413554912e6e9310f894be03e98f0cfa38e9ffd92e0770b162d02  ./browser_app/app/engine/inspect_source.py
+7df5ba7c7af0f5ce4ddc777b666711db95c13c10e1508ddd69574e3172f6f4c1  ./browser_app/app/engine/jobs.py
+ff2ead4395b22490ec85886a1039529ab2f8b7cdab29daeabfed7630dab69042  ./browser_app/app/engine/landmark_transfer.py
+3a5ae6ba5b0a68cbc3713cbd353bec30b186ded55efe44491b47e0cfbff2b00d  ./browser_app/app/engine/legacy_model.py
+cf5262c3294e59574fb2c5bea9df601d7f4d482c0246d61be4f6d1eb9359bb3a  ./browser_app/app/engine/locked_baseline.py
+a0a875e13a5ec43c409f5cf14cf32817c2f4b9f70dd560984ca1444bed02a272  ./browser_app/app/engine/models.py
+f5b0a957cb38fff53d5bd4f614bbf600345cf77326687e9c64ad6a6784724979  ./browser_app/app/engine/native_donor.py
+b856e256bb0db64bb5144119a4cf2798d521318a16c1999ec40cf3f896bf2d10  ./browser_app/app/engine/native_sculpt.py
+bd03595f3deb7d3d5832a1abcaf85c1563b65662b0e7289437083656430a11a1  ./browser_app/app/engine/native_texture.py
+f734a217e1dc8c41156a26c157eeb571462f627f46eabf755eb7182bf898c040  ./browser_app/app/engine/paired_game_space.py
+5ef9b70bea7483032a7130c51cd1e54bdca76950ae0eadfa9373f635b04794dc  ./browser_app/app/engine/profile.py
+22c41e491ce05ce03dac5e272482d316ba156eca00dae69d1ba05f6d6133efe8  ./browser_app/app/engine/rear_texture.py
+fc6d33eb4c9e5cf3ad09a61948319085ad09336313fa1a06d85c77b277631e6b  ./browser_app/app/engine/rear_uv_guard.py
+1a5ddcf306f13bf63f60793bebb6b146152824e998dffae7bbfe6f0634f15dc3  ./browser_app/app/engine/reference_atlas.py
+4c3cc4cce1f0f6879cb62a2b0362df53d79180b928124162b873969cb217d15d  ./browser_app/app/engine/source_hair.py
+2fa6c4efd8779919931c5d0a354389015c36d3458ca97c108d707bfe0de98830  ./browser_app/app/engine/texture_contract.py
+cea2055e75ac561b463b84e07a4eded2d95e9cbb31d118bec2b7ad808bdace6f  ./browser_app/app/engine/topology_face_transfer.py
+3264be01c31f83239ed6b5621030eb5e1746abc09dbdefa6688a6ef9800746d1  ./browser_app/app/engine/working_reference.py
+e829b64b5087693fc0f0d4372aa695e93a12afc3b699dc025443a7a1d23e45a3  ./browser_app/app/main.py
+d70c1f3e6707461e82de9c8af1cad17693619d0c3a16ced8cb844e60f5f8f6aa  ./browser_app/app/paths.py
+db02c64d5e9c2d257ee94685b49cac0c1bc5a4e57abd351ef8400f7a0220b800  ./browser_app/app/static/app.js
+baa359adcf249d11bccf4a7234401555728f77a092c9f7547d0b95664a1058cf  ./browser_app/app/static/hair_matcher.js
+28519548a404bc82985a99eab845e97eb7d0ff6f5de8123f13e92ddf0494ccbb  ./browser_app/app/static/index.html
+86b8002f4777aed8ca23f97f8d971074943acef642456a807ebf30d832db8a79  ./browser_app/app/static/style.css
+ef3d1c109884dabe84889b352085dbbc7518bb89218b0af3b187cb4078caa002  ./browser_app/app/static/viewer.js
+56cf2931ae121fce404fc4b180d31495c04dd6f172fcbd2186c5a4a69d92a724  ./browser_app/config/ea_hair_baselines.json
+77c42c0641f2a7decbb4e21ade6f5c09f66d2c3625c6daed0d35bb072dfc388b  ./browser_app/config/pes_fm26_game_space_v041.json
+76327f6a024b971b2cafe7156332544dc903693811f4a7e48f7198280524ad4a  ./browser_app/config/player_names.json
+3b65e2bef6c422d3641ad950652b23169d04d19ad10ec4ad1c18db2eb6fa7f5f  ./browser_app/config/proven_donor_v1.json
+e13248892c6fe7badde9a347fa0778d71e83ef0a58136fb997dd51a9401fe878  ./browser_app/config/regression_baselines.json
+cbf6bd639d2fb58f5620a5120b2e7ea894a11ca4a213db84ba895d504182bbde  ./browser_app/reference_atlas/README.md
+2b583188ec04dc4d8d410a98ef6853113ea72974da27e91d84034eb97e9a6247  ./browser_app/requirements.txt
+d312c153f7f77f91f915b2d2d56c66f0958d2a68c81c496366910c8849891a68  ./browser_app/run_windows.bat
+1696947b98f6b90564c20155231e1c2d056846a203fa4fcbd59cceecc780e0d2  ./browser_app/tests/test_hair_matcher_core.py
+b2e17478c673cedb37ab30f200a4ae645f5d6946d24c43daa7a35176a0666a4e  ./browser_app/tests/test_runtime_paths.py
+710cc7bbe3c2845124bcccd8bb43bddce1f126fc5a0a5a7b668777bc0edfb3a4  ./browser_app/tools/import_fc_bridge.py
+1b182fb91a6b3c7acad05b46ec1e9807e9a25b103232db6cdbc6abce29af14a6  ./browser_app/tools/import_native_hair.py
+6ae59960ab7fb20c13246ff4d9495857a3691eb32e30bd73b01965d64a614f5b  ./browser_app/tools/import_reference_heads.py
+8dd1a8d447d1abe2a1b3e7f4453151bd751ce6b4eeca9fbfe2bff3c1f99939a1  ./browser_app/tools/install_runtime_file.py
+EOF
+          sha256sum -c /tmp/v075.sha256
+
       - name: Run browser application tests
         shell: bash
         run: |
@@ -113,6 +186,7 @@ jobs:
           test -f RUN.bat
           test -f UPDATE_AND_RUN.bat
           test -d browser_app
+          test ! -e .bootstrap
           test ! -e launcher.py
           test ! -e src
           test ! -e bridge
