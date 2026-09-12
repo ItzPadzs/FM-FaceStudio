@@ -1,0 +1,1 @@
+Finalize the verified v0.75 browser-only baseline from the recovered issue payload.
