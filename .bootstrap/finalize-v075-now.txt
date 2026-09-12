@@ -1,2 +1,1 @@
-Finalize the verified v0.75 browser-only baseline from the complete V075FINAL recovery payload.
-Trigger: 2026-09-12 complete payload
+Inspect all staged v0.75 payload sets now.
