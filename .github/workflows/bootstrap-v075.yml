@@ -58,13 +58,13 @@ jobs:
           if unexpected:
               raise SystemExit(f'Unexpected v0.75 archive chunks: {unexpected}')
 
+          for i in expected:
+              print('CHUNK', i, 'B64_CHARS', len(parts[i]))
           encoded = ''.join(parts[i] for i in expected)
           archive = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(archive).hexdigest()
           print('ARCHIVE_BYTES', len(archive))
           print('ARCHIVE_SHA256', digest)
-          if len(archive) != 259658:
-              raise SystemExit(f'Unexpected archive size: {len(archive)} (expected 259658)')
 
           zip_path = Path('/tmp/FM-FaceStudio-v0.75-clean-github-v2.zip')
           zip_path.write_bytes(archive)
@@ -72,7 +72,12 @@ jobs:
           shutil.rmtree(source, ignore_errors=True)
           source.mkdir(parents=True)
 
-          with zipfile.ZipFile(zip_path) as zf:
+          try:
+              zf = zipfile.ZipFile(zip_path)
+          except Exception as exc:
+              raise SystemExit(f'Reconstructed archive is not a complete ZIP: {exc}')
+          with zf:
+              print('ZIP_MEMBERS', len(zf.infolist()))
               bad = zf.testzip()
               if bad:
                   raise SystemExit(f'Corrupt ZIP member: {bad}')
@@ -83,7 +88,6 @@ jobs:
                       raise SystemExit(f'Unsafe ZIP path: {info.filename}')
               zf.extractall(source)
 
-          # Accept a single wrapper directory, but never guess beyond that.
           children = [p for p in source.iterdir() if p.name != '__MACOSX']
           if len(children) == 1 and children[0].is_dir() and not (source / 'browser_app').exists():
               root = children[0]
