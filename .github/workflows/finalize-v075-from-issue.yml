@@ -1,95 +1,44 @@
-name: Bootstrap v0.75 Browser Baseline
+name: Inspect v0.75 Staging Payloads
 
 on:
   push:
     branches:
       - facestudio-v0.75-browser-baseline
     paths:
-      - '.bootstrap/v075_publish16/**'
-
-permissions:
-  contents: write
+      - '.bootstrap/finalize-v075-now.txt'
 
 jobs:
-  migrate:
+  inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout migration branch
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Rebuild and validate clean browser source
+      - uses: actions/checkout@v4
+      - name: Inspect existing payload sets
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           shopt -s nullglob
-          parts=(.bootstrap/v075_publish16/*.b64)
-          if [ "${#parts[@]}" -ne 16 ]; then
-            echo "Waiting for all 16 verified chunks; currently have ${#parts[@]}."
-            exit 0
-          fi
-          cat .bootstrap/v075_publish16/*.b64 | base64 --decode > /tmp/v075.tar.xz
-          rm -rf /tmp/v075
-          mkdir -p /tmp/v075
-          tar -xJf /tmp/v075.tar.xz -C /tmp/v075
-
-          FILE_COUNT="$(find /tmp/v075 -type f | wc -l | tr -d ' ')"
-          test "$FILE_COUNT" = "68"
-
-          python - /tmp/v075 <<'PY'
-          from pathlib import Path
-          import hashlib, sys
-          root = Path(sys.argv[1])
-          files = sorted(p for p in root.rglob('*') if p.is_file())
-          h = hashlib.sha256()
-          for p in files:
-              rel = p.relative_to(root).as_posix()
-              fh = hashlib.sha256(p.read_bytes()).hexdigest()
-              h.update(rel.encode())
-              h.update(b'\0')
-              h.update(fh.encode())
-              h.update(b'\n')
-          digest = h.hexdigest()
-          print(f'Validated {len(files)} files, tree_sha256={digest}')
-          expected = '86d034295b3d71a688be9adb978d887388830e214881bd3c17b2b4fc4ac5116c'
-          if digest != expected:
-              raise SystemExit(f'Clean-source tree mismatch: expected {expected}, got {digest}')
-          PY
-
-          test -f /tmp/v075/RUN.bat
-          test -f /tmp/v075/UPDATE_AND_RUN.bat
-          test -f /tmp/v075/browser_app/run_windows.bat
-          test -f /tmp/v075/browser_app/app/main.py
-          test -f /tmp/v075/browser_app/app/static/index.html
-          grep -q '0.75.0' /tmp/v075/browser_app/app/main.py
-          grep -q 'v0.75.0' /tmp/v075/browser_app/app/static/index.html
-          grep -q 'Hair Matcher' /tmp/v075/browser_app/app/static/index.html
-          for obsolete in RUN_LEGACY.bat launcher.py src templates pyproject.toml INSTALL_AND_OPEN.bat bridge data docs examples; do
-            test ! -e "/tmp/v075/$obsolete"
+          for d in .bootstrap/v075_tree .bootstrap/v075_full .bootstrap/v075_payload2 .bootstrap/v075_publish16 .bootstrap/v075_safe; do
+            echo "=== $d ==="
+            parts=("$d"/*.b64)
+            echo "parts=${#parts[@]}"
+            [ ${#parts[@]} -gt 0 ] || continue
+            cat "${parts[@]}" > /tmp/payload.b64
+            echo "b64_bytes=$(wc -c < /tmp/payload.b64)"
+            if base64 --decode /tmp/payload.b64 > /tmp/payload.bin 2>/tmp/err; then
+              echo "decoded_bytes=$(wc -c < /tmp/payload.bin)"
+              sha256sum /tmp/payload.bin
+              file /tmp/payload.bin
+              if tar -tJf /tmp/payload.bin >/tmp/list 2>/dev/null; then
+                echo "tar_xz=YES files=$(wc -l < /tmp/list)"
+                head -20 /tmp/list
+              elif unzip -l /tmp/payload.bin >/tmp/list 2>/dev/null; then
+                echo "zip=YES"
+                tail -5 /tmp/list
+              else
+                echo "archive=NO"
+              fi
+            else
+              echo "base64=BAD"
+              cat /tmp/err
+            fi
           done
-
-      - name: Run browser application tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --disable-pip-version-check -q pytest -r /tmp/v075/browser_app/requirements.txt
-          cd /tmp/v075/browser_app
-          python -m pytest tests -q
-
-      - name: Replace legacy repository contents
-        shell: bash
-        run: |
-          set -euo pipefail
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/v075/. .
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --check
-          if git diff --cached --quiet; then
-            echo "Repository already matches clean v0.75 browser baseline."
-            exit 0
-          fi
-          git commit -m "Replace legacy desktop app with v0.75 browser FaceStudio"
-          git push origin HEAD:facestudio-v0.75-browser-baseline
