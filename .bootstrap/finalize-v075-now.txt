@@ -1,1 +1,2 @@
-Finalize the verified v0.75 browser-only baseline from the recovered issue payload.
+Finalize the verified v0.75 browser-only baseline from the V075ZIP recovery payload.
+Trigger: 2026-09-12 final migration
