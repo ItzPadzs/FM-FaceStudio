@@ -34,23 +34,23 @@ jobs:
           import base64, hashlib, re, zipfile
           chunks = {}
           for line in Path('/tmp/bodies.txt').read_text(encoding='utf-8').splitlines():
-              m = re.fullmatch(r'V075ZIP:(\d+):(.*)', line.strip())
+              m = re.fullmatch(r'V075FINAL:(\d+):(.*)', line.strip())
               if not m:
                   continue
               i = int(m.group(1))
               payload = m.group(2).strip()
               if i in chunks and chunks[i] != payload:
-                  raise SystemExit(f'Conflicting V075ZIP chunk {i}')
+                  raise SystemExit(f'Conflicting V075FINAL chunk {i}')
               chunks[i] = payload
-          expected = list(range(5))
+          expected = [0]
           if sorted(chunks) != expected:
-              raise SystemExit(f'Expected V075ZIP chunks {expected}; found {sorted(chunks)}')
-          raw = base64.b64decode(''.join(chunks[i] for i in expected), validate=True)
+              raise SystemExit(f'Expected V075FINAL chunks {expected}; found {sorted(chunks)}')
+          raw = base64.b64decode(chunks[0], validate=True)
           archive = Path('/tmp/v075.zip')
           archive.write_bytes(raw)
-          print(f'Reconstructed {len(chunks)} chunks, {len(raw)} bytes, sha256={hashlib.sha256(raw).hexdigest()}')
+          print(f'Reconstructed {len(chunks)} chunk, {len(raw)} bytes, sha256={hashlib.sha256(raw).hexdigest()}')
           if not zipfile.is_zipfile(archive):
-              raise SystemExit('Recovered V075ZIP payload is not a ZIP archive')
+              raise SystemExit('Recovered V075FINAL payload is not a ZIP archive')
           target = Path('/tmp/v075').resolve()
           with zipfile.ZipFile(archive) as zf:
               for member in zf.infolist():
